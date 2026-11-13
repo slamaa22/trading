@@ -47,38 +47,38 @@ function initTradingViewCharts() {
 
   state.tvMain = LWC.createChart(mainEl, {
     width: mainEl.clientWidth || 800,
-    height: 330,
+    height: 310,
     layout: {
-      background: { type: 'solid', color: '#070b14' },
-      textColor: '#94a3b8',
+      background: { type: 'solid', color: '#070709' },
+      textColor: '#a1a1aa',
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 11
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.06)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.06)' }
+      vertLines: { color: 'rgba(255, 255, 255, 0.04)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.04)' }
     },
     crosshair: {
       mode: LWC.CrosshairMode.Normal
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.14)',
+      borderColor: 'rgba(255, 255, 255, 0.08)',
       scaleMargins: { top: 0.08, bottom: 0.22 }
     },
     timeScale: {
-      borderColor: 'rgba(148, 163, 184, 0.14)',
+      borderColor: 'rgba(255, 255, 255, 0.08)',
       timeVisible: true,
       secondsVisible: false
     }
   });
 
   state.candleSeries = state.tvMain.addCandlestickSeries({
-    upColor: '#10b981',
-    downColor: '#ef4444',
-    borderUpColor: '#10b981',
-    borderDownColor: '#ef4444',
-    wickUpColor: '#10b981',
-    wickDownColor: '#ef4444'
+    upColor: '#00d09c',
+    downColor: '#ff4d4f',
+    borderUpColor: '#00d09c',
+    borderDownColor: '#ff4d4f',
+    wickUpColor: '#00d09c',
+    wickDownColor: '#ff4d4f'
   });
 
   state.volumeSeries = state.tvMain.addHistogramSeries({
@@ -109,19 +109,19 @@ function initTradingViewCharts() {
   // RSI(14) Sub-Chart
   state.tvRsi = LWC.createChart(rsiEl, {
     width: rsiEl.clientWidth || 800,
-    height: 115,
+    height: 90,
     layout: {
-      background: { type: 'solid', color: '#070b14' },
-      textColor: '#64748b',
+      background: { type: 'solid', color: '#070709' },
+      textColor: '#71717a',
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 10.5
     },
     grid: {
-      vertLines: { color: 'rgba(148, 163, 184, 0.05)' },
-      horzLines: { color: 'rgba(148, 163, 184, 0.06)' }
+      vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.04)' }
     },
     rightPriceScale: {
-      borderColor: 'rgba(148, 163, 184, 0.14)',
+      borderColor: 'rgba(255, 255, 255, 0.08)',
       scaleMargins: { top: 0.12, bottom: 0.12 }
     },
     timeScale: {
@@ -130,7 +130,7 @@ function initTradingViewCharts() {
   });
 
   state.rsiSeries = state.tvRsi.addLineSeries({
-    color: '#10b981',
+    color: '#00d09c',
     lineWidth: 2,
     priceLineVisible: false,
     title: 'RSI 14'
@@ -313,38 +313,42 @@ function bindUIEvents() {
   document.getElementById('btnScanNow').addEventListener('click', async () => {
     const btn = document.getElementById('btnScanNow');
     btn.disabled = true;
-    btn.textContent = '⏳ Scanne 196...';
+    btn.textContent = '⏳';
     try {
       const res = await fetch('/api/scan', { method: 'POST' });
       const snap = await res.json();
       applySnapshot(snap);
     } finally {
       btn.disabled = false;
-      btn.textContent = '↻ Komplett-Scan';
+      btn.textContent = '↻';
     }
   });
 
-  // Fallstudie (Kapitel 08) Dropdown
+  // Fallstudie (Kapitel 08) Buttons
   const simDropdown = document.querySelector('.sim-dropdown');
-  document.getElementById('btnSimCaseStudy').addEventListener('click', (e) => {
-    e.stopPropagation();
-    simDropdown.classList.toggle('open');
-  });
-  document.addEventListener('click', () => simDropdown.classList.remove('open'));
+  const btnSim = document.getElementById('btnSimCaseStudy');
+  if (btnSim && simDropdown) {
+    btnSim.addEventListener('click', (e) => {
+      e.stopPropagation();
+      simDropdown.classList.toggle('open');
+    });
+    document.addEventListener('click', () => simDropdown.classList.remove('open'));
+  }
 
   document.querySelectorAll('#simMenu button[data-sim]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      simDropdown.classList.remove('open');
+      simDropdown?.classList.remove('open');
+      closeSettingsModal();
       const stage = btn.getAttribute('data-sim');
       await runCaseStudySimulation(stage);
     });
   });
 
   // Phasen-Filter Pills
-  document.querySelectorAll('#phaseFilterTabs .filter-pill').forEach((pill) => {
+  document.querySelectorAll('#phaseFilterTabs [data-filter]').forEach((pill) => {
     pill.addEventListener('click', () => {
-      document.querySelectorAll('#phaseFilterTabs .filter-pill').forEach((p) => p.classList.remove('active'));
+      document.querySelectorAll('#phaseFilterTabs [data-filter]').forEach((p) => p.classList.remove('active'));
       pill.classList.add('active');
       state.activeFilter = pill.getAttribute('data-filter');
       renderStockList();
@@ -352,9 +356,9 @@ function bindUIEvents() {
   });
 
   // Index-Filter Chips (alle 7 Leitindizes)
-  document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((chip) => {
+  document.querySelectorAll('#regionFilterTabs [data-region]').forEach((chip) => {
     chip.addEventListener('click', () => {
-      document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((c) => c.classList.remove('active'));
+      document.querySelectorAll('#regionFilterTabs [data-region]').forEach((c) => c.classList.remove('active'));
       chip.classList.add('active');
       state.activeRegion = chip.getAttribute('data-region');
       renderStockList();
@@ -390,14 +394,14 @@ function bindUIEvents() {
     state.tvRsi?.timeScale().fitContent();
   });
 
-  // Workbench Tabs (Alarme / Aktive Trades / Journal)
-  document.querySelectorAll('.wb-tab').forEach((tab) => {
+  // Tabs (Investments / Historie & Orders / Signale)
+  document.querySelectorAll('[data-wbtab]').forEach((tab) => {
     tab.addEventListener('click', () => {
       const target = tab.getAttribute('data-wbtab');
-      document.querySelectorAll('.wb-tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.wb-pane').forEach((p) => p.classList.remove('active'));
+      document.querySelectorAll('[data-wbtab]').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.tr-pane, .wb-pane').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById(`wbtab-${target}`).classList.add('active');
+      document.getElementById(`wbtab-${target}`)?.classList.add('active');
     });
   });
 
@@ -686,16 +690,19 @@ function renderDemoAccount() {
   if (chk) chk.checked = demo.autoTradeEnabled !== false;
   if (badge) {
     if (demo.autoTradeEnabled !== false) {
-      badge.textContent = '🤖 AUTO-TRADER AKTIV';
+      badge.textContent = 'Auto-Trader aktiv';
       badge.classList.remove('paused');
     } else {
-      badge.textContent = '⏸️ AUTO-TRADER PAUSIERT';
+      badge.textContent = 'Auto-Trader pausiert';
       badge.classList.add('paused');
     }
   }
 
   const openBadge = document.getElementById('demoOpenCountBadge');
   if (openBadge) openBadge.textContent = demo.openPositionsCount || 0;
+
+  const closedBadge = document.getElementById('closedTradesBadge');
+  if (closedBadge) closedBadge.textContent = demo.closedTradesCount || 0;
 
   const eqEl = document.getElementById('demoTotalEquity');
   if (eqEl) eqEl.textContent = fmtEuro(demo.totalEquityEuro);
@@ -705,8 +712,8 @@ function renderDemoAccount() {
     const rEuro = Number(demo.totalReturnEuro || 0);
     const rPct = Number(demo.totalReturnPct || 0);
     const sign = rEuro >= 0 ? '+' : '';
-    retEl.textContent = `${sign}${fmtEuro(rEuro)} (${sign}${rPct.toFixed(2)}%) vs. Start`;
-    retEl.style.color = rEuro > 0 ? '#34d399' : rEuro < 0 ? '#f87171' : '#94a3b8';
+    retEl.textContent = `${sign}${fmtEuro(rEuro)} (${sign}${rPct.toFixed(2)} %) gesamt`;
+    retEl.style.color = rEuro > 0 ? '#00d09c' : rEuro < 0 ? '#ff4d4f' : '#a1a1aa';
   }
 
   const cashEl = document.getElementById('demoCashEuro');
@@ -725,27 +732,37 @@ function renderDemoAccount() {
   if (unrEl) {
     const u = Number(demo.unrealizedPnlEuro || 0);
     unrEl.textContent = `${u >= 0 ? '+' : ''}${fmtEuro(u)}`;
-    unrEl.style.color = u > 0 ? '#34d399' : u < 0 ? '#f87171' : '#e2e8f0';
+    unrEl.style.color = u > 0 ? '#00d09c' : u < 0 ? '#ff4d4f' : '#ffffff';
   }
 
   const realEl = document.getElementById('demoRealizedPnl');
   if (realEl) {
     const r = Number(demo.realizedPnlEuro || 0);
     realEl.textContent = `${r >= 0 ? '+' : ''}${fmtEuro(r)}`;
-    realEl.style.color = r > 0 ? '#34d399' : r < 0 ? '#f87171' : '#e2e8f0';
   }
 
-  const closedSub = document.getElementById('demoClosedTradesSub');
-  if (closedSub) closedSub.textContent = `${demo.closedTradesCount || 0} abgeschlossene Trades`;
+  // Berechne aktuelles RR (Avg Win R / Avg Loss R) & Ø R aus dem Journal
+  const journal = state.snapshot?.journal || [];
+  const winEntries = journal.filter((j) => Number(j.pnlEuro) >= 0);
+  const lossEntries = journal.filter((j) => Number(j.pnlEuro) < 0);
+  const avgWinR = winEntries.length
+    ? winEntries.reduce((s, j) => s + Number(j.rMultiple || 0), 0) / winEntries.length
+    : 0;
+  const avgLossR = lossEntries.length
+    ? Math.abs(lossEntries.reduce((s, j) => s + Number(j.rMultiple || 0), 0) / lossEntries.length)
+    : 0;
+  const rrRatio = avgLossR > 0 ? `${(avgWinR / avgLossR).toFixed(2)}:1 RR` : journal.length > 0 ? `+${avgWinR.toFixed(2)}R Ø` : '';
 
   const wrEl = document.getElementById('demoWinRate');
   if (wrEl) {
-    wrEl.textContent = demo.closedTradesCount > 0 ? `${Number(demo.winRatePct || 0).toFixed(1)}%` : '--%';
-    wrEl.style.color = demo.winRatePct >= 50 ? '#34d399' : '#e2e8f0';
+    wrEl.textContent = demo.closedTradesCount > 0 ? `${Number(demo.winRatePct || 0).toFixed(0)} %` : '-- %';
+    wrEl.style.color = demo.winRatePct >= 50 ? '#00d09c' : '#ffffff';
   }
 
   const wlSub = document.getElementById('demoWinLossSub');
-  if (wlSub) wlSub.textContent = `${demo.wins || 0} Wins · ${demo.losses || 0} Losses`;
+  if (wlSub) {
+    wlSub.textContent = `${demo.wins || 0}W · ${demo.losses || 0}L${rrRatio ? ` · ${rrRatio}` : ''}`;
+  }
 }
 
 function updateTelegramStatusUI() {
@@ -754,27 +771,23 @@ function updateTelegramStatusUI() {
   const dot = document.getElementById('tgStatusDot');
   const title = document.getElementById('tgBotTitle');
   const sub = document.getElementById('tgBotSub');
-  const openBtn = document.getElementById('btnOpenTelegramBot');
 
   if (s.telegramBotToken && s.telegramChatId) {
-    bar.classList.add('connected');
-    dot.classList.add('connected');
-    title.textContent = `@PureSiteTrading_bot · Verbunden (${s.telegramChatId})`;
-    sub.textContent = 'Nur Lead-Entry & Lead-Close Alarme (Kein Phasen-Spam)';
-    openBtn.textContent = '📲 Bot öffnen';
+    bar?.classList.add('connected');
+    dot?.classList.add('connected');
+    if (title) title.textContent = 'Telegram aktiv';
+    if (sub) sub.textContent = `Verbunden (${s.telegramChatId}) · Nur Lead-Entry & Close Alarme`;
   } else {
-    bar.classList.remove('connected');
-    dot.classList.remove('connected');
-    title.textContent = '@PureSiteTrading_bot';
-    sub.textContent = 'Klicke auf „Bot öffnen“ & danach auf „Koppeln“';
-    openBtn.textContent = '📲 Bot öffnen';
+    bar?.classList.remove('connected');
+    dot?.classList.remove('connected');
+    if (title) title.textContent = 'Telegram koppeln';
+    if (sub) sub.textContent = 'Klicke auf „Bot öffnen“ & danach auf „Erkennen“';
   }
 }
 
 async function quickDetectChatFromHeader() {
   const btn = document.getElementById('btnQuickDetectChat');
-  const orig = btn.textContent;
-  btn.textContent = '⏳ Prüfe...';
+  if (!btn) return;
   try {
     const res = await fetch('/api/telegram/detect-chat', {
       method: 'POST',
@@ -782,23 +795,12 @@ async function quickDetectChatFromHeader() {
       body: JSON.stringify({})
     });
     const data = await res.json();
-    if (data.found) {
-      if (state.snapshot?.settings) {
-        state.snapshot.settings.telegramChatId = data.chatId;
-      }
+    if (data.found && state.snapshot?.settings) {
+      state.snapshot.settings.telegramChatId = data.chatId;
       updateTelegramStatusUI();
-      btn.textContent = `✅ ID: ${data.chatId}`;
-      await triggerTestAlert();
-    } else {
-      btn.textContent = '⚠️ Erst /start senden!';
-      window.open('https://t.me/PureSiteTrading_bot?start=connect', '_blank');
     }
   } catch {
-    btn.textContent = '❌ Fehler';
-  } finally {
-    setTimeout(() => {
-      btn.textContent = orig;
-    }, 3500);
+    // ignore
   }
 }
 
@@ -806,29 +808,21 @@ async function quickDetectChatFromHeader() {
 
 function renderIndexRegimes() {
   const container = document.getElementById('indexRegimeItems');
+  if (!container) return;
   const regimes = state.snapshot?.indexRegimes || {};
   const entries = Object.values(regimes);
-
-  if (entries.length === 0) {
-    container.innerHTML = `<span class="sub-counter">Leitindizes werden synchronisiert...</span>`;
-    return;
-  }
+  if (entries.length === 0) return;
 
   container.innerHTML = entries
     .map((r) => {
       const chg = Number(r.changePct || 0);
       const sign = chg >= 0 ? '+' : '';
-      const cls = r.isFallingHard ? 'warn' : 'ok';
-      const color = chg >= 0 ? '#34d399' : '#f87171';
-      return `<div class="regime-pill ${cls}" title="${escapeHtml(r.summary)}">
-        <strong>${escapeHtml(r.name)}</strong>
-        <span class="idx-val" style="color:${color}">${sign}${chg.toFixed(2)}%</span>
-      </div>`;
+      return `<span>${escapeHtml(r.name)} ${sign}${chg.toFixed(2)}%</span>`;
     })
-    .join('');
+    .join(' · ');
 }
 
-// --- TOP MEAN-REVERSION RADAR STRIP (TOP 6 KANDIDATEN AUS 196 AKTIEN) ---
+// --- TOP SIGNALE & DIPS (TOP 6 KANDIDATEN AUS 196 AKTIEN) ---
 
 function renderTopRadarStrip() {
   const grid = document.getElementById('topRadarGrid');
@@ -836,7 +830,6 @@ function renderTopRadarStrip() {
   const stocks = state.snapshot?.stocks || [];
   if (stocks.length === 0) return;
 
-  // Sortiere die 6 spannendsten Setups (höchste Phase >= 2, danach stärkste Tagesverlierer / Swing-Dips)
   const topCandidates = [...stocks]
     .filter((s) => s.price > 0)
     .sort((a, b) => {
@@ -852,10 +845,10 @@ function renderTopRadarStrip() {
     .map((s) => {
       const p = s.analysis?.phase ?? 0;
       const chg = Number(s.intradayChangePct || 0);
-      const chgColor = chg >= 0 ? '#34d399' : '#f87171';
+      const chgColor = chg >= 0 ? '#00d09c' : '#ff4d4f';
       const isSel = s.symbol === state.selectedSymbol;
       const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
-      const shortBadge = p === 4 ? '🟢 LEAD P4' : p === 3 ? '⚡ P3 BODEN' : p === 2 ? '👁️ P2 LOD' : p === 1 ? '⛔ P1 FALL' : 'NEUTRAL';
+      const shortBadge = p === 4 ? '🟢 LEAD' : p === 3 ? '⚡ BODEN' : p === 2 ? '👁️ LOD' : p === 1 ? 'FALL' : '';
 
       return `<div class="radar-card ${isSel ? 'active' : ''} ${p === 4 ? 'lead-p4' : ''}" data-radar-sym="${escapeHtml(s.symbol)}">
         <div class="rc-row1">
@@ -864,8 +857,8 @@ function renderTopRadarStrip() {
         </div>
         <div class="rc-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
         <div class="rc-row3">
-          <span class="phase-tag ${tagClass}" style="padding:1px 5px;font-size:9.5px">${shortBadge}</span>
-          <span style="color:${chgColor};font-weight:700">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>
+          ${shortBadge ? `<span class="phase-tag ${tagClass}">${shortBadge}</span>` : `<span></span>`}
+          <span style="color:${chgColor};font-weight:700;font-size:11.5px">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %</span>
         </div>
       </div>`;
     })
@@ -886,12 +879,13 @@ function renderTopRadarStrip() {
 
 function renderStockList() {
   const container = document.getElementById('stockListContainer');
+  if (!container) return;
   const stocks = state.snapshot?.stocks || [];
   const withPrice = stocks.filter((s) => s.price > 0).length;
 
-  document.getElementById('universeCountLabel').textContent = `${withPrice} / ${stocks.length} Aktien in Euro (€) aktiv`;
+  const countLabel = document.getElementById('universeCountLabel');
+  if (countLabel) countLabel.textContent = `${withPrice}/${stocks.length} aktiv (€)`;
 
-  // Zähler für Filter-Pills aktualisieren
   const p4Cnt = stocks.filter((s) => s.analysis?.phase === 4).length;
   const p3Cnt = stocks.filter((s) => s.analysis?.phase === 3).length;
   const p2Cnt = stocks.filter((s) => s.analysis?.phase === 2).length;
@@ -921,24 +915,12 @@ function renderStockList() {
     return true;
   });
 
-  // Sortierung anwenden
   const sortMode = state.sortBy || 'phase';
   filtered.sort((a, b) => {
-    if (sortMode === 'intraday') {
-      return (a.intradayChangePct || 0) - (b.intradayChangePct || 0);
-    }
-    if (sortMode === 'swing') {
-      return (a.dipFromSwingHighPct || 0) - (b.dipFromSwingHighPct || 0);
-    }
-    if (sortMode === 'pe') {
-      const peA = a.fundamentals?.peValue > 0 ? a.fundamentals.peValue : 999;
-      const peB = b.fundamentals?.peValue > 0 ? b.fundamentals.peValue : 999;
-      return peA - peB;
-    }
-    if (sortMode === 'name') {
-      return String(a.name).localeCompare(String(b.name), 'de');
-    }
-    // Standard: Setup-Phase & Konfluenz, danach stärkster Tagesverlust
+    if (sortMode === 'intraday') return (a.intradayChangePct || 0) - (b.intradayChangePct || 0);
+    if (sortMode === 'swing') return (a.dipFromSwingHighPct || 0) - (b.dipFromSwingHighPct || 0);
+    if (sortMode === 'name') return String(a.name).localeCompare(String(b.name), 'de');
+
     const pa = a.analysis?.phase ?? -9;
     const pb = b.analysis?.phase ?? -9;
     if (pb !== pa) return pb - pa;
@@ -949,10 +931,7 @@ function renderStockList() {
   });
 
   if (filtered.length === 0) {
-    container.innerHTML = `<div style="padding:24px 14px;text-align:center;color:#64748b;font-size:12px;">
-      Keine Aktie in diesem Filter.<br/><br/>
-      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b>, um einen kompletten Phase-4-Lead live zu simulieren!
-    </div>`;
+    container.innerHTML = `<div style="padding:24px 12px;text-align:center;color:#71717a;font-size:12.5px;">Keine Aktie in diesem Filter gefunden.</div>`;
     return;
   }
 
@@ -961,38 +940,22 @@ function renderStockList() {
       const p = s.analysis?.phase ?? 0;
       const isSelected = s.symbol === state.selectedSymbol;
       const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
+      const badgeLabel = p === 4 ? '🟢 LEAD' : p === 3 ? '⚡ BODEN' : p === 2 ? '👁️ LOD' : p === 1 ? 'FALL' : '';
       const cardPhase = p >= 2 ? `phase-${p}` : '';
       const chg = Number(s.intradayChangePct || 0);
       const chgCls = chg >= 0 ? 'pos' : 'neg';
-      const conf = s.analysis?.confluenceCount || 0;
-      const lod = s.analysis?.lodPrice ? `${s.analysis.lodPrice.toFixed(2)} €` : '--';
-      const pe = s.fundamentals?.peValue ? `KGV ${s.fundamentals.peValue}x` : '';
-
-      const dotsHtml = [0, 1, 2, 3]
-        .map((i) => `<span class="conf-dot ${i < conf ? 'on' : ''}"></span>`)
-        .join('');
 
       return `<div class="stock-card ${cardPhase} ${isSelected ? 'selected' : ''}" data-symbol="${escapeHtml(s.symbol)}">
-        <div class="sc-top">
-          <div class="sc-ident">
-            <div class="sc-sym-row">
-              <span class="sc-sym">${escapeHtml(s.symbol)}</span>
-              <span class="sc-idx">${escapeHtml(s.indexName)}</span>
-            </div>
-            <span class="sc-name" title="${escapeHtml(s.name)} · ${escapeHtml(s.sector)}">${escapeHtml(s.name)}</span>
+        <div class="sc-left">
+          <div class="sc-title-line">
+            <span class="sc-sym">${escapeHtml(s.symbol)}</span>
+            ${badgeLabel ? `<span class="phase-tag ${tagClass}">${badgeLabel}</span>` : ''}
           </div>
-          <div class="sc-price-col">
-            <div class="sc-price">${Number(s.price || 0).toFixed(2)} €</div>
-            <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% <span style="color:#64748b;font-weight:400">(${Number(s.dipFromSwingHighPct || 0).toFixed(1)}% 20T)</span></div>
-          </div>
+          <span class="sc-name">${escapeHtml(s.name)}</span>
         </div>
-        <div class="sc-bottom">
-          <span class="phase-tag ${tagClass}">${escapeHtml(s.analysis?.phaseBadge || 'NEUTRAL')}</span>
-          <div class="sc-meta">
-            <span>LoD ${lod}</span>
-            ${pe ? `<span>· ${pe}</span>` : ''}
-            <span class="conf-dots" title="${conf}/4 Konfluenz-Signale">${dotsHtml}</span>
-          </div>
+        <div class="sc-right">
+          <div class="sc-price">${Number(s.price || 0).toFixed(2)} €</div>
+          <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %</div>
         </div>
       </div>`;
     })
@@ -1009,7 +972,7 @@ function renderStockList() {
   });
 }
 
-// --- MAIN STAGE: HERO DETAILS, 4-PHASEN-STEPPER & M10 CHART ---
+// --- MAIN STAGE: HERO DETAILS, 4-PHASEN-BAR & M10 CHART ---
 
 async function loadChartForSymbol(symbol, forceRefresh = false) {
   if (state.ws?.readyState === 1 && symbol) {
@@ -1039,42 +1002,49 @@ function renderSelectedStockDetails(rec) {
   document.getElementById('detailStockIndex').textContent = `${rec.indexName} · ${rec.sector}`;
 
   const mhEl = document.getElementById('detailMarketHours');
-  mhEl.textContent = rec.marketClock?.reason || 'Handelszeit';
-  mhEl.className = `mkt-badge ${rec.marketClock?.isOpen ? 'open' : 'closed'}`;
+  if (mhEl) {
+    mhEl.textContent = rec.marketClock?.isOpen ? 'Geöffnet' : 'Geschlossen';
+    mhEl.className = `tr-meta-pill ${rec.marketClock?.isOpen ? 'open' : 'closed'}`;
+  }
 
   const f = rec.fundamentals || {};
   const peEl = document.getElementById('detailPeBadge');
   if (peEl) {
-    peEl.textContent = f.peValue ? `KGV ${f.peValue}x` : 'Profitabel';
+    peEl.textContent = f.peValue ? `KGV ${f.peValue}x` : 'Qualität';
   }
 
-  document.getElementById('detailFundamentalSummary').innerHTML =
-    `<b>Bewertung:</b> ${escapeHtml(f.peReason || '-')} &nbsp;·&nbsp; <b>Dip-Analyse:</b> ${escapeHtml(f.dipReason || '-')} &nbsp;·&nbsp; <b>Schutzfilter:</b> ${escapeHtml(f.earningsNote || '-')}`;
+  const a = rec.analysis || {};
+  const s = rec.sizing || {};
+  const phase = a.phase ?? 0;
+
+  const phaseBadgeEl = document.getElementById('detailPhaseBadge');
+  if (phaseBadgeEl) {
+    phaseBadgeEl.textContent = a.phaseBadge || 'NEUTRAL';
+    phaseBadgeEl.className = `tr-phase-pill p${phase >= 1 ? phase : 0}`;
+  }
 
   document.getElementById('detailCurrentPrice').textContent = `${Number(rec.price || 0).toFixed(2)} €`;
 
   const chgEl = document.getElementById('detailIntradayChange');
   const chg = Number(rec.intradayChangePct || 0);
-  chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% heute`;
-  chgEl.className = `delta-pill ${chg >= 0 ? 'pos' : 'neg'}`;
+  chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} % heute`;
+  chgEl.className = `tr-delta ${chg >= 0 ? 'pos' : 'neg'}`;
 
   const swingEl = document.getElementById('detailSwingDip');
   const sw = Number(rec.dipFromSwingHighPct || 0);
-  swingEl.textContent = `${sw.toFixed(1)}% v. 20T-Hoch`;
+  swingEl.textContent = `${sw.toFixed(1)} % v. 20T-Hoch`;
 
-  // Hero Mini-KPIs (alles in €)
-  const a = rec.analysis || {};
-  const s = rec.sizing || {};
   document.getElementById('heroKpiLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} €` : '--';
   document.getElementById('heroKpiSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} €` : '--';
-  document.getElementById('heroKpiLev').textContent = `${s.activeLeverage || 8}x`;
-  document.getElementById('heroKpiBuy').textContent = s.positionSizeEuro ? `${s.positionSizeEuro.toFixed(0)} €` : '--';
+  const qtSl = document.getElementById('qtStopLoss');
+  if (qtSl) qtSl.textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} €` : '--';
+  document.getElementById('heroKpiLev').textContent = `${s.activeLeverage || 8}x Long`;
+  document.getElementById('heroKpiBuy').textContent = s.positionSizeEuro ? `${Math.min(2500, s.positionSizeEuro).toFixed(0)} €` : '--';
 
-  // 4-Phasen-Stepper
-  const phase = a.phase ?? 0;
-  document.querySelectorAll('#phaseStepper .pipe-step').forEach((stepEl) => {
+  // 4-Phasen-Bar
+  document.querySelectorAll('#phaseStepper [data-step]').forEach((stepEl) => {
     const sNum = Number(stepEl.getAttribute('data-step'));
-    stepEl.className = 'pipe-step';
+    stepEl.className = 'tr-phase-step';
     if (phase > sNum) {
       stepEl.classList.add('passed');
     } else if (phase === sNum) {
@@ -1085,52 +1055,17 @@ function renderSelectedStockDetails(rec) {
   const actionBox = document.getElementById('phaseActionBox');
   actionBox.innerHTML = `<strong>${escapeHtml(a.phaseName || '')}:</strong> ${escapeHtml(a.actionText || '')}`;
   actionBox.style.borderLeftColor =
-    phase === 4 ? '#10b981' : phase === 3 ? '#f59e0b' : phase === 2 ? '#38bdf8' : phase === 1 ? '#ef4444' : '#64748b';
+    phase === 4 ? '#00d09c' : phase === 3 ? '#f59e0b' : phase === 2 ? '#38bdf8' : phase === 1 ? '#ff4d4f' : '#3f3f46';
 
-  // Chart-Legende (alles in €)
   document.getElementById('legEma20').textContent = a.ema20 ? `${a.ema20.toFixed(2)} €` : '--';
-  document.getElementById('legVwap').textContent = a.vwap ? `${a.vwap.toFixed(2)} €` : '--';
-  document.getElementById('legLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} €` : '--';
-  document.getElementById('legSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} €` : '--';
   document.getElementById('legRsi').textContent = a.rsi14 ? a.rsi14.toFixed(1) : '--';
 
-  // 4 Konfluenz-Signale
-  const confSignals = a.confluenceSignals || [];
   const confCount = a.confluenceCount || 0;
   const confBadge = document.getElementById('confluenceScoreBadge');
-  confBadge.textContent = `${confCount} / 4 Konfluenz`;
-  confBadge.style.color = confCount >= 2 ? '#34d399' : '#94a3b8';
-
-  document.getElementById('confluenceList').innerHTML = confSignals
-    .map((c) => {
-      return `<div class="conf-box ${c.active ? 'active' : ''}">
-        <span>${c.active ? '✅' : '⚪'}</span>
-        <div>
-          <strong>${escapeHtml(c.name)}</strong>
-          <span>${escapeHtml(c.detail || '')}</span>
-        </div>
-      </div>`;
-    })
-    .join('');
-
-  // 9-Punkte Pre-Trade-Checkliste
-  const checklist = rec.checklist || [];
-  const passedCount = checklist.filter((c) => c.passed).length;
-  const chkBadge = document.getElementById('checklistScoreBadge');
-  chkBadge.textContent = `${passedCount} / ${checklist.length || 9} erfüllt`;
-  chkBadge.style.color = passedCount >= 8 ? '#34d399' : '#fbbf24';
-
-  document.getElementById('preTradeChecklist').innerHTML = checklist
-    .map((item) => {
-      return `<div class="chk-row ${item.passed ? 'passed' : ''}">
-        <span>${item.passed ? '☑️' : '⬜'}</span>
-        <div>
-          <strong>${escapeHtml(item.nr)}. ${escapeHtml(item.title)}</strong>
-          <span>${escapeHtml(item.detail || item.requirement)}</span>
-        </div>
-      </div>`;
-    })
-    .join('');
+  if (confBadge) {
+    confBadge.textContent = `${confCount}/4 Signale`;
+    confBadge.style.color = confCount >= 2 ? '#00d09c' : '#a1a1aa';
+  }
 }
 
 // --- 5%-RISIKO & DERIVATE-RECHNER (HEBEL 5x-10x) ---
@@ -1188,54 +1123,13 @@ async function recalculateSizingFromInputs() {
 function renderSizingOutput(sizing, cur = '€') {
   if (!sizing) return;
   document.getElementById('heroKpiSl').textContent = `${sizing.stopLossStock.toFixed(2)} ${cur}`;
-  document.getElementById('heroKpiLev').textContent = `${sizing.activeLeverage}x`;
-  document.getElementById('heroKpiBuy').textContent = `${sizing.positionSizeEuro.toFixed(0)} €`;
-
-  const box = document.getElementById('calcResultsBox');
-  box.innerHTML = `
-    <div class="calc-row">
-      <span>1. Max. erlaubter Verlust (R_max = ${sizing.maxRiskPct}%):</span>
-      <strong class="text-red">-${sizing.rMaxEuro.toFixed(2)} €</strong>
-    </div>
-    <div class="calc-row">
-      <span>2. Struktureller Stop-Loss Aktie (LoD - ${sizing.noiseBufferPct}%):</span>
-      <strong>${sizing.stopLossStock.toFixed(2)} ${cur} (-${sizing.stopDistanceStockPct.toFixed(2)}%)</strong>
-    </div>
-    <div class="calc-row">
-      <span>3. Kalibrierter Hebel &amp; Risiko im Derivat:</span>
-      <strong class="text-cyan">Hebel ${sizing.activeLeverage}x → -${sizing.dDerivatPct.toFixed(2)}% bis SL</strong>
-    </div>
-    <div class="calc-row">
-      <span>4. Max. erlaubte K.O.-Barriere (Kap. 4.3):</span>
-      <strong>&lt; ${sizing.maxAllowedKoBarrier.toFixed(2)} ${cur} (Strike ~${sizing.impliedStrike.toFixed(2)})</strong>
-    </div>
-    <div class="calc-buy-banner">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span>📌 <b>Kaufbetrag Derivat (P_Kauf):</b></span>
-        <strong style="font-family:var(--font-mono);font-size:15px;color:#34d399">${sizing.positionSizeEuro.toFixed(0)} € (${sizing.accountAllocationPct.toFixed(1)}% Konto)</strong>
-      </div>
-      <div style="font-size:11px;color:#cbd5e1;margin-top:4px;">
-        Order: <b>${sizing.quantityPieces} Stück</b> à ${sizing.modelCertEntryPrice.toFixed(2)} € →
-        <b>Stop-Loss im Derivat direkt bei ${sizing.modelCertStopPrice.toFixed(2)} €</b> eintragen
-      </div>
-    </div>
-  `;
-
-  const tbody = document.getElementById('calcMatrixBody');
-  tbody.innerHTML = (sizing.matrix || [])
-    .map((row) => {
-      return `<tr class="${row.isRecommended ? 'rec-row' : ''}">
-        <td>${row.leverage}x ${row.isRecommended ? '★' : ''}</td>
-        <td>-${row.stopDerivatPct.toFixed(1)}%</td>
-        <td>${row.accountSharePct.toFixed(1)}%</td>
-        <td>${row.buyAmountEuro.toFixed(0)} €</td>
-        <td>${row.stopAmountEuro.toFixed(0)} € (-${row.maxLossEuro.toFixed(0)} €)</td>
-      </tr>`;
-    })
-    .join('');
+  const qtSl = document.getElementById('qtStopLoss');
+  if (qtSl) qtSl.textContent = `${sizing.stopLossStock.toFixed(2)} ${cur}`;
+  document.getElementById('heroKpiLev').textContent = `${sizing.activeLeverage}x Long`;
+  document.getElementById('heroKpiBuy').textContent = `${Math.min(2500, sizing.positionSizeEuro).toFixed(0)} €`;
 }
 
-// --- AKTIVE TRADES & JOURNAL ---
+// --- AKTIVE INVESTMENTS & HISTORIE (TRADE REPUBLIC STIL) ---
 
 async function openActiveTradeFromCalculator() {
   const symbol = state.selectedSymbol || 'SY1.DE';
@@ -1254,27 +1148,27 @@ async function openActiveTradeFromCalculator() {
       lodPrice,
       stopLossStock: s?.stopLossStock || lodPrice * 0.998,
       leverage: s?.activeLeverage || 8,
-      positionSizeEuro: s?.positionSizeEuro || 2500
+      positionSizeEuro: Math.min(2500, s?.positionSizeEuro || 2500)
     })
   });
   const data = await res.json();
   if (data.snapshot) {
     applySnapshot(data.snapshot);
-    document.querySelector('.wb-tab[data-wbtab="trades"]').click();
+    document.querySelector('[data-wbtab="trades"]')?.click();
   }
 }
 
 function renderActiveTradesAndJournal() {
   const trades = state.snapshot?.activeTrades || [];
   const journal = state.snapshot?.journal || [];
-  const orders = state.snapshot?.demoAccount?.orderHistory || [];
   document.getElementById('activeTradesCount').textContent = trades.length;
+  const closedBadge = document.getElementById('closedTradesBadge');
+  if (closedBadge) closedBadge.textContent = journal.length;
 
   const tradesContainer = document.getElementById('activeTradesList');
   if (trades.length === 0) {
-    tradesContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">
-      Aktuell keine offenen Demo-Positionen.<br/><br/>
-      Sobald ein <b>Phase-4-Lead</b> erkannt wird (oder du oben rechts in der <b>Playbook-Fallstudie Kap. 08</b> auf <b>Phase 4</b> klickst), kauft der Demo-Account automatisch die berechnete Knock-Out-Position!
+    tradesContainer.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">
+      Keine offenen Positionen. Der Auto-Trader kauft automatisch beim nächsten Phase-4-Lead.
     </div>`;
   } else {
     tradesContainer.innerHTML = trades
@@ -1283,36 +1177,49 @@ function renderActiveTradesAndJournal() {
         const pnlEuro = Number(ev.pnlEuro || 0);
         const derivPct = Number(ev.derivGainPct || 0);
         const rMult = Number(ev.rMultiple || 0);
-        const pnlColor = pnlEuro >= 0 ? '#34d399' : '#f87171';
-        const srcBadge = t.isDemoAuto
-          ? `<span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,0.18);color:#34d399;border:1px solid #10b981;">🤖 AUTO-LEAD</span>`
-          : `<span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(56,189,248,0.18);color:#38bdf8;">👤 MANUELL</span>`;
+        const pnlColor = pnlEuro >= 0 ? '#00d09c' : '#ff4d4f';
+        const curPrice = Number(ev.currentPrice || t.entryPrice);
+        const slPrice = Number(ev.recommendedStopStock || t.stopLossStock);
 
-        return `<div class="trade-item">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
-            <div style="display:flex;align-items:center;gap:6px;">
-              ${srcBadge}
-              <strong>${escapeHtml(t.name)} (${escapeHtml(t.symbol)}) · ${t.leverage}x Long</strong>
+        return `<div class="tr-pos-row" data-pos-sym="${escapeHtml(t.symbol)}">
+          <div class="tr-pos-left">
+            <div class="tr-pos-title">
+              <span>${escapeHtml(t.name)}</span>
+              <span class="tr-meta-pill">${escapeHtml(t.symbol)} · ${t.leverage}x</span>
             </div>
-            <strong style="font-family:var(--font-mono);color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(2)} € (${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)}% | ${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R)</strong>
+            <div class="tr-pos-sub">
+              Einsatz ${Number(t.positionSizeEuro || 0).toFixed(0)} € · Kurs ${curPrice.toFixed(2)} € (Entry ${Number(t.entryPrice).toFixed(2)} € · SL ${slPrice.toFixed(2)} €)
+            </div>
           </div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:4px;font-family:var(--font-mono);">
-            Einsatz: <b>${Number(t.positionSizeEuro || 0).toFixed(0)} €</b> · Entry: ${Number(t.entryPrice).toFixed(2)} € · Aktuell: ${(ev.currentPrice || t.entryPrice).toFixed(2)} € · SL: <b style="color:#fbbf24">${(ev.recommendedStopStock || t.stopLossStock).toFixed(2)} €</b>
-          </div>
-          <div style="margin-top:6px;padding:6px 8px;background:#070b14;border-radius:6px;font-size:11px;">
-            <b>${escapeHtml(ev.stageName || 'Stufe 1: Initial Risk')}:</b> ${escapeHtml(ev.recommendation || 'Stop unter LoD belassen.')}
-          </div>
-          <div style="margin-top:8px;display:flex;justify-content:flex-end;">
-            <button class="btn btn-xs btn-secondary btn-close-trade" data-id="${escapeHtml(t.id)}">
-              🏁 Jetzt im Demo-Konto verkaufen &amp; Gewinn/Verlust buchen
+          <div class="tr-pos-right">
+            <div>
+              <div class="tr-pos-pnl" style="color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(2)} €</div>
+              <div class="tr-pos-r">${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)} % · ${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R</div>
+            </div>
+            <button class="tr-chip-btn btn-close-trade" data-id="${escapeHtml(t.id)}" title="Position sofort verkaufen">
+              Verkaufen
             </button>
           </div>
         </div>`;
       })
       .join('');
 
+    tradesContainer.querySelectorAll('.tr-pos-row').forEach((row) => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.btn-close-trade')) return;
+        const sym = row.getAttribute('data-pos-sym');
+        if (sym) {
+          state.selectedSymbol = sym;
+          renderTopRadarStrip();
+          renderStockList();
+          loadChartForSymbol(sym, false);
+        }
+      });
+    });
+
     tradesContainer.querySelectorAll('.btn-close-trade').forEach((btn) => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
         const id = btn.getAttribute('data-id');
         const res = await fetch(`/api/trades/${encodeURIComponent(id)}/close`, {
           method: 'POST',
@@ -1326,54 +1233,34 @@ function renderActiveTradesAndJournal() {
   }
 
   const journalContainer = document.getElementById('journalList');
-  if (journal.length === 0 && orders.length === 0) {
-    journalContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Noch keine abgeschlossenen Demo-Trades oder Orders im Journal.</div>`;
+  if (journal.length === 0) {
+    journalContainer.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">Noch keine abgeschlossenen Trades.</div>`;
   } else {
-    const journalHtml = journal
-      .slice(0, 15)
+    journalContainer.innerHTML = journal
+      .slice(0, 20)
       .map((j) => {
         const win = j.pnlEuro >= 0;
-        const timeStr = j.closedAt ? new Date(j.closedAt).toLocaleTimeString('de-DE') : '';
-        return `<div class="journal-item" style="border-left:3px solid ${win ? '#10b981' : '#ef4444'}">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong>${win ? '🟢 WIN' : '🔴 LOSS'} · ${escapeHtml(j.name)} (${escapeHtml(j.symbol)}) · ${j.leverage}x</strong>
-            <strong style="font-family:var(--font-mono);color:${win ? '#34d399' : '#f87171'}">${win ? '+' : ''}${Number(j.pnlEuro).toFixed(2)} € (${win ? '+' : ''}${Number(j.rMultiple).toFixed(2)}R)</strong>
+        const pnlColor = win ? '#00d09c' : '#ff4d4f';
+        const timeStr = j.closedAt ? new Date(j.closedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+        return `<div class="tr-pos-row">
+          <div class="tr-pos-left">
+            <div class="tr-pos-title">
+              <span>${escapeHtml(j.name)} (${escapeHtml(j.symbol)})</span>
+              <span class="tr-meta-pill">${j.leverage}x</span>
+            </div>
+            <div class="tr-pos-sub">
+              ${Number(j.entryPrice).toFixed(2)} € → ${Number(j.exitPrice).toFixed(2)} € · ${escapeHtml(j.exitReason || 'Exit')} ${timeStr ? `(${timeStr})` : ''}
+            </div>
           </div>
-          <div style="font-size:11px;color:#cbd5e1;margin-top:4px;font-family:var(--font-mono);">
-            Entry ${Number(j.entryPrice).toFixed(2)} € → Exit ${Number(j.exitPrice).toFixed(2)} € (${j.stockGainPct >= 0 ? '+' : ''}${j.stockGainPct}% Aktie | ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct}% Derivat)
-          </div>
-          <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;display:flex;justify-content:space-between;">
-            <span>Grund: ${escapeHtml(j.exitReason || 'Exit')}</span>
-            <span>${timeStr ? `${timeStr} Uhr · ` : ''}Konto danach: <b>${Number(j.demoEquityAfterEuro || 10000).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</b></span>
-          </div>
-        </div>`;
-      })
-      .join('');
-
-    const ordersHtml = orders
-      .slice(0, 15)
-      .map((o) => {
-        const isBuy = o.action === 'BUY';
-        const tStr = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('de-DE') : '';
-        return `<div class="journal-item" style="opacity:0.9;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;">
-            <strong style="color:${isBuy ? '#38bdf8' : '#34d399'}">${isBuy ? '🛒 DEMO-KAUF (ENTRY)' : '🏁 DEMO-VERKAUF (CLOSE)'} · ${escapeHtml(o.symbol)} (${o.leverage}x)</strong>
-            <span style="font-family:var(--font-mono);color:#94a3b8">${tStr}</span>
-          </div>
-          <div style="font-size:11px;color:#cbd5e1;margin-top:2px;font-family:var(--font-mono);">
-            ${
-              isBuy
-                ? `Kurs: ${Number(o.priceEuro).toFixed(2)} € · Einsatz: <b>${Number(o.positionSizeEuro).toFixed(2)} €</b> (${o.quantityPieces} Stk.) · SL: ${Number(o.stopLossEuro).toFixed(2)} €`
-                : `Entry ${Number(o.entryPriceEuro).toFixed(2)} € → Exit ${Number(o.exitPriceEuro).toFixed(2)} € · Auszahlung: <b>${Number(o.payoutEuro).toFixed(2)} €</b> (${o.pnlEuro >= 0 ? '+' : ''}${Number(o.pnlEuro).toFixed(2)} €)`
-            }
+          <div class="tr-pos-right">
+            <div>
+              <div class="tr-pos-pnl" style="color:${pnlColor}">${win ? '+' : ''}${Number(j.pnlEuro).toFixed(2)} €</div>
+              <div class="tr-pos-r">${win ? '+' : ''}${Number(j.rMultiple).toFixed(2)}R · ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct} %</div>
+            </div>
           </div>
         </div>`;
       })
       .join('');
-
-    journalContainer.innerHTML =
-      (journalHtml ? `<div style="font-size:10.5px;font-weight:700;color:#94a3b8;margin-bottom:4px;">ABGESCHLOSSENE DEMO-TRADES (${journal.length})</div>${journalHtml}` : '') +
-      (ordersHtml ? `<div style="font-size:10.5px;font-weight:700;color:#94a3b8;margin:8px 0 4px;">CHRONOLOGISCHES ORDERBUCH (${orders.length})</div>${ordersHtml}` : '');
   }
 }
 
@@ -1445,35 +1332,29 @@ function renderAlertsHistory() {
   const container = document.getElementById('alertsHistoryList');
 
   if (list.length === 0) {
-    container.innerHTML = `<div style="padding:20px;text-align:center;color:#64748b;font-size:12px;">
-      Noch keine Alarme ausgelöst.<br/>
-      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b> oder <b>„🚀 Test-Alarm“</b>!
+    container.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">
+      Noch keine Signale ausgelöst.
     </div>`;
     return;
   }
 
   container.innerHTML = list
+    .slice(0, 20)
     .map((a) => {
-      const timeStr = new Date(a.timestamp).toLocaleTimeString('de-DE');
+      const timeStr = new Date(a.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
       const tgOk = a.delivery?.telegram?.ok;
-      const tgStatus = tgOk
-        ? `<span class="text-cyan">📲 Telegram ✓</span>`
-        : `<span style="color:#fbbf24">📲 Telegram: Bitte /start im Bot klicken</span>`;
 
-      return `<div class="alert-item" style="cursor:pointer" data-symbol="${escapeHtml(a.symbol || '')}">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;margin-bottom:4px;">
-          <span class="phase-tag p${a.phase || 4}">${escapeHtml(a.phaseBadge || 'SIGNAL')}</span>
-          <span style="font-family:var(--font-mono);color:#94a3b8">${timeStr} · 🖥️ Web ✓ · ${tgStatus}</span>
+      return `<div class="tr-pos-row alert-item" data-symbol="${escapeHtml(a.symbol || '')}">
+        <div class="tr-pos-left">
+          <div class="tr-pos-title">
+            <span class="phase-tag p${a.phase || 4}">${escapeHtml(a.phaseBadge || 'SIGNAL')}</span>
+            <span>${escapeHtml(a.title)}</span>
+          </div>
+          <div class="tr-pos-sub">${escapeHtml(a.message)}</div>
         </div>
-        <strong style="display:block;font-size:12px;margin-bottom:3px;">${escapeHtml(a.title)}</strong>
-        <p style="font-size:11px;color:#cbd5e1;">${escapeHtml(a.message)}</p>
-        ${
-          a.sizing
-            ? `<div style="margin-top:6px;padding:5px 8px;background:#070b14;border-radius:5px;font-family:var(--font-mono);font-size:10.5px;color:#34d399;">
-                SL: ${a.sizing.stopLossStock.toFixed(2)} € · Hebel ${a.sizing.activeLeverage}x · Kauf: <b>${a.sizing.positionSizeEuro.toFixed(0)} €</b> (Risiko: -${a.sizing.rMaxEuro.toFixed(0)} €)
-              </div>`
-            : ''
-        }
+        <div class="tr-pos-right">
+          <div class="tr-pos-r">${timeStr} · ${tgOk ? 'Telegram ✓' : 'Web'}</div>
+        </div>
       </div>`;
     })
     .join('');
@@ -1527,9 +1408,9 @@ async function runCaseStudySimulation(stage = 'phase4_entry') {
       state.selectedSymbol = 'SY1.DE';
       await loadChartForSymbol('SY1.DE', false);
       if (stage === 'phase4_entry') {
-        document.querySelector('.wb-tab[data-wbtab="trades"]')?.click();
+        document.querySelector('[data-wbtab="trades"]')?.click();
       } else if (stage === 'stagnation_exit') {
-        document.querySelector('.wb-tab[data-wbtab="journal"]')?.click();
+        document.querySelector('[data-wbtab="journal"]')?.click();
       }
     }
   } catch (err) {
