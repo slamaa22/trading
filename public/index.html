@@ -185,8 +185,63 @@
       </div>
     </aside>
 
-    <!-- MAIN STAGE: TOP RADAR STRIP + HERO HEADER + 4-PHASE PIPELINE + TRADINGVIEW LIGHTWEIGHT CHART + BOTTOM DECK -->
+    <!-- MAIN STAGE: DEMO ACCOUNT AUTO-TRADER + TOP RADAR STRIP + HERO HEADER + 4-PHASE PIPELINE + TRADINGVIEW LIGHTWEIGHT CHART + BOTTOM DECK -->
     <main class="main-stage">
+      <!-- LIVE DEMO-ACCOUNT (AUTO-TRADER NACH PLAYBOOK-LEADS) -->
+      <section class="demo-account-strip" id="demoAccountStrip">
+        <div class="demo-strip-top">
+          <div class="demo-strip-title">
+            <span class="demo-live-badge" id="demoStatusBadge">🤖 AUTO-TRADER AKTIV</span>
+            <h3>💼 Live Demo-Account (Paper-Trading exakt nach Phase-4-Leads &amp; Stagnations-/SL-Exits)</h3>
+          </div>
+          <div class="demo-strip-actions">
+            <label class="switch-label demo-switch" title="Wenn aktiv, kauft das Demo-Konto automatisch jeden Phase-4-Lead (5% Risiko) und verkauft automatisch beim Close-Signal">
+              <input type="checkbox" id="chkDemoAutoTrade" checked />
+              <span>Leads automatisch traden</span>
+            </label>
+            <button class="btn btn-xs btn-secondary" id="btnShowDemoOrders" title="Alle Demo-Käufe & Verkäufe anzeigen">
+              📜 Orderbuch &amp; Positionen (<span id="demoOpenCountBadge">0</span> offen)
+            </button>
+            <button class="btn btn-xs btn-secondary" id="btnResetDemoAccount" title="Demo-Konto wieder auf 10.000 € Startkapital zurücksetzen">
+              🔄 Reset (10.000 €)
+            </button>
+          </div>
+        </div>
+
+        <div class="demo-kpi-grid">
+          <div class="demo-kpi-box primary">
+            <span class="dk-label">Gesamtkapital (Equity)</span>
+            <strong class="dk-val" id="demoTotalEquity">10.000,00 €</strong>
+            <span class="dk-sub" id="demoTotalReturn">+0,00 € (+0,00%) vs. Start</span>
+          </div>
+          <div class="demo-kpi-box">
+            <span class="dk-label">Freies Cash</span>
+            <strong class="dk-val" id="demoCashEuro">10.000,00 €</strong>
+            <span class="dk-sub" id="demoInitialSub">Startkapital: 10.000 €</span>
+          </div>
+          <div class="demo-kpi-box">
+            <span class="dk-label">Investiert in Leads</span>
+            <strong class="dk-val text-cyan" id="demoInvestedEuro">0,00 €</strong>
+            <span class="dk-sub" id="demoOpenPositionsSub">0 offene Knock-Out-Trades</span>
+          </div>
+          <div class="demo-kpi-box">
+            <span class="dk-label">Offener G/V (Unrealisiert)</span>
+            <strong class="dk-val" id="demoUnrealizedPnl">+0,00 €</strong>
+            <span class="dk-sub">Live-Bewertung (M10)</span>
+          </div>
+          <div class="demo-kpi-box">
+            <span class="dk-label">Realisierter G/V (Closed)</span>
+            <strong class="dk-val" id="demoRealizedPnl">+0,00 €</strong>
+            <span class="dk-sub" id="demoClosedTradesSub">0 abgeschlossene Trades</span>
+          </div>
+          <div class="demo-kpi-box">
+            <span class="dk-label">Trefferquote (Win-Rate)</span>
+            <strong class="dk-val" id="demoWinRate">--%</strong>
+            <span class="dk-sub" id="demoWinLossSub">0 Wins · 0 Losses</span>
+          </div>
+        </div>
+      </section>
+
       <!-- TOP SETUP RADAR STRIP (6 HOTTEST MEAN-REVERSION CANDIDATES ACROSS 196 STOCKS) -->
       <section class="radar-strip-section">
         <div class="radar-strip-header">
@@ -377,7 +432,7 @@
           </div>
 
           <button class="btn btn-emerald btn-block" id="btnOpenTradeFromCalc">
-            🛡️ Position als aktiven Trade überwachen (Stufe 1–3 &amp; Stagnations-Exit)
+            💼 Position jetzt im Demo-Konto kaufen (Stufe 1–3 &amp; Auto-Close aktiv)
           </button>
 
           <div class="matrix-wrap">
@@ -420,24 +475,24 @@
           </div>
         </div>
 
-        <!-- CARD 3: AKTIVE TRADES (STAGNATIONS-EXIT) & SYNCHRONER ALARM-FEED -->
-        <div class="wb-card">
+        <!-- CARD 3: DEMO-POSITIONEN, ORDERBUCH & SYNCHRONER ALARM-FEED -->
+        <div class="wb-card" id="wbCardTradesAndAlerts">
           <div class="wb-tabs">
             <button class="wb-tab active" data-wbtab="alerts">
-              🔔 Live Alarme (<span id="alertsCount">0</span>)
+              🔔 Alarme (<span id="alertsCount">0</span>)
             </button>
             <button class="wb-tab" data-wbtab="trades">
-              📈 Aktive Trades (<span id="activeTradesCount">0</span>)
+              💼 Demo-Depot (<span id="activeTradesCount">0</span>)
             </button>
             <button class="wb-tab" data-wbtab="journal">
-              📓 Trading-Journal
+              📜 Orderbuch &amp; Journal
             </button>
           </div>
 
           <!-- ALERTS PANE -->
           <div class="wb-pane active" id="wbtab-alerts">
             <div class="pane-ActionBar">
-              <span>Synchrones Log (Web-Dashboard + @PureSiteTrading_bot)</span>
+              <span>Nur Lead-Entry (P4) &amp; Lead-Close Alarme (€)</span>
               <button class="btn btn-xs btn-secondary" id="btnTriggerTestAlert">🚀 Test-Alarm senden</button>
             </div>
             <div id="alertsHistoryList" class="feed-scroll"></div>
@@ -446,7 +501,7 @@
           <!-- ACTIVE TRADES PANE -->
           <div class="wb-pane" id="wbtab-trades">
             <div class="pane-ActionBar">
-              <span>Überwacht Stufe 2 (Break-Even ab 1,5R) &amp; Stufe 3 (Stagnations-Exit)</span>
+              <span>Offene Demo-Positionen · Auto-SL auf Break-Even ab 1,5R &amp; Auto-Close</span>
             </div>
             <div id="activeTradesList" class="feed-scroll"></div>
           </div>
@@ -454,7 +509,7 @@
           <!-- JOURNAL PANE -->
           <div class="wb-pane" id="wbtab-journal">
             <div class="pane-ActionBar">
-              <span>Dokumentierte Trades nach Kapitel 9.1 (inkl. R-Multiples)</span>
+              <span>Abgeschlossene Demo-Trades &amp; Order-Historie in Euro (€)</span>
             </div>
             <div id="journalList" class="feed-scroll"></div>
           </div>

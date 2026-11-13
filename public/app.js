@@ -415,6 +415,52 @@ function bindUIEvents() {
     document.getElementById('liveAlertBanner').classList.add('hidden');
   });
 
+  // Demo-Account Steuerung (Auto-Trade Schalter, Orderbuch anzeigen, Reset)
+  const chkAuto = document.getElementById('chkDemoAutoTrade');
+  if (chkAuto) {
+    chkAuto.addEventListener('change', async (e) => {
+      try {
+        const res = await fetch('/api/demo/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ autoTradeEnabled: e.target.checked })
+        });
+        const data = await res.json();
+        if (data.snapshot) applySnapshot(data.snapshot);
+      } catch (err) {
+        console.error('Demo-Toggle Fehler:', err);
+      }
+    });
+  }
+
+  const btnShowOrders = document.getElementById('btnShowDemoOrders');
+  if (btnShowOrders) {
+    btnShowOrders.addEventListener('click', () => {
+      const openCnt = state.snapshot?.activeTrades?.length || 0;
+      const tabKey = openCnt > 0 ? 'trades' : 'journal';
+      const tabBtn = document.querySelector(`.wb-tab[data-wbtab="${tabKey}"]`);
+      if (tabBtn) tabBtn.click();
+      document.getElementById('wbCardTradesAndAlerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
+  const btnResetDemo = document.getElementById('btnResetDemoAccount');
+  if (btnResetDemo) {
+    btnResetDemo.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/demo/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initialBalanceEuro: 10000 })
+        });
+        const data = await res.json();
+        if (data.snapshot) applySnapshot(data.snapshot);
+      } catch (err) {
+        console.error('Demo-Reset Fehler:', err);
+      }
+    });
+  }
+
   // Telegram Quick-Connect Buttons in Topbar & Modal
   document.getElementById('btnQuickDetectChat').addEventListener('click', quickDetectChatFromHeader);
   document.getElementById('btnQuickTestAlert').addEventListener('click', triggerTestAlert);
@@ -445,6 +491,11 @@ function connectWebSocket() {
       const data = JSON.parse(event.data);
       if (data.type === 'INITIAL_SNAPSHOT' || data.type === 'SCAN_COMPLETED') {
         applySnapshot(data.snapshot);
+      } else if (data.type === 'DEMO_ACCOUNT_UPDATED') {
+        if (state.snapshot) {
+          state.snapshot.demoAccount = data.demoAccount;
+          renderDemoAccount();
+        }
       } else if (data.type === 'SCAN_STATUS') {
         const dot = document.getElementById('wsStatusDot');
         if (data.isScanning) {
@@ -501,6 +552,7 @@ function applySnapshot(snapshot) {
   }
 
   updateTelegramStatusUI();
+  renderDemoAccount();
   renderIndexRegimes();
   renderTopRadarStrip();
   renderStockList();
@@ -521,6 +573,80 @@ function applySnapshot(snapshot) {
       loadChartForSymbol(state.selectedSymbol, false);
     }
   }
+}
+
+function renderDemoAccount() {
+  const demo = state.snapshot?.demoAccount;
+  if (!demo) return;
+
+  const fmtEuro = (val) =>
+    `${Number(val || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+
+  const badge = document.getElementById('demoStatusBadge');
+  const chk = document.getElementById('chkDemoAutoTrade');
+  if (chk) chk.checked = demo.autoTradeEnabled !== false;
+  if (badge) {
+    if (demo.autoTradeEnabled !== false) {
+      badge.textContent = '🤖 AUTO-TRADER AKTIV';
+      badge.classList.remove('paused');
+    } else {
+      badge.textContent = '⏸️ AUTO-TRADER PAUSIERT';
+      badge.classList.add('paused');
+    }
+  }
+
+  const openBadge = document.getElementById('demoOpenCountBadge');
+  if (openBadge) openBadge.textContent = demo.openPositionsCount || 0;
+
+  const eqEl = document.getElementById('demoTotalEquity');
+  if (eqEl) eqEl.textContent = fmtEuro(demo.totalEquityEuro);
+
+  const retEl = document.getElementById('demoTotalReturn');
+  if (retEl) {
+    const rEuro = Number(demo.totalReturnEuro || 0);
+    const rPct = Number(demo.totalReturnPct || 0);
+    const sign = rEuro >= 0 ? '+' : '';
+    retEl.textContent = `${sign}${fmtEuro(rEuro)} (${sign}${rPct.toFixed(2)}%) vs. Start`;
+    retEl.style.color = rEuro > 0 ? '#34d399' : rEuro < 0 ? '#f87171' : '#94a3b8';
+  }
+
+  const cashEl = document.getElementById('demoCashEuro');
+  if (cashEl) cashEl.textContent = fmtEuro(demo.cashEuro);
+
+  const initSub = document.getElementById('demoInitialSub');
+  if (initSub) initSub.textContent = `Startkapital: ${Number(demo.initialBalanceEuro || 10000).toLocaleString('de-DE')} €`;
+
+  const invEl = document.getElementById('demoInvestedEuro');
+  if (invEl) invEl.textContent = fmtEuro(demo.investedEuro);
+
+  const openSub = document.getElementById('demoOpenPositionsSub');
+  if (openSub) openSub.textContent = `${demo.openPositionsCount || 0} offene Knock-Out-Trades`;
+
+  const unrEl = document.getElementById('demoUnrealizedPnl');
+  if (unrEl) {
+    const u = Number(demo.unrealizedPnlEuro || 0);
+    unrEl.textContent = `${u >= 0 ? '+' : ''}${fmtEuro(u)}`;
+    unrEl.style.color = u > 0 ? '#34d399' : u < 0 ? '#f87171' : '#e2e8f0';
+  }
+
+  const realEl = document.getElementById('demoRealizedPnl');
+  if (realEl) {
+    const r = Number(demo.realizedPnlEuro || 0);
+    realEl.textContent = `${r >= 0 ? '+' : ''}${fmtEuro(r)}`;
+    realEl.style.color = r > 0 ? '#34d399' : r < 0 ? '#f87171' : '#e2e8f0';
+  }
+
+  const closedSub = document.getElementById('demoClosedTradesSub');
+  if (closedSub) closedSub.textContent = `${demo.closedTradesCount || 0} abgeschlossene Trades`;
+
+  const wrEl = document.getElementById('demoWinRate');
+  if (wrEl) {
+    wrEl.textContent = demo.closedTradesCount > 0 ? `${Number(demo.winRatePct || 0).toFixed(1)}%` : '--%';
+    wrEl.style.color = demo.winRatePct >= 50 ? '#34d399' : '#e2e8f0';
+  }
+
+  const wlSub = document.getElementById('demoWinLossSub');
+  if (wlSub) wlSub.textContent = `${demo.wins || 0} Wins · ${demo.losses || 0} Losses`;
 }
 
 function updateTelegramStatusUI() {
@@ -1039,11 +1165,15 @@ async function openActiveTradeFromCalculator() {
 function renderActiveTradesAndJournal() {
   const trades = state.snapshot?.activeTrades || [];
   const journal = state.snapshot?.journal || [];
+  const orders = state.snapshot?.demoAccount?.orderHistory || [];
   document.getElementById('activeTradesCount').textContent = trades.length;
 
   const tradesContainer = document.getElementById('activeTradesList');
   if (trades.length === 0) {
-    tradesContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Keine offenen Trades in der 3-Stufen-Überwachung.</div>`;
+    tradesContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">
+      Aktuell keine offenen Demo-Positionen.<br/><br/>
+      Sobald ein <b>Phase-4-Lead</b> erkannt wird (oder du oben rechts in der <b>Playbook-Fallstudie Kap. 08</b> auf <b>Phase 4</b> klickst), kauft der Demo-Account automatisch die berechnete Knock-Out-Position!
+    </div>`;
   } else {
     tradesContainer.innerHTML = trades
       .map((t) => {
@@ -1052,21 +1182,27 @@ function renderActiveTradesAndJournal() {
         const derivPct = Number(ev.derivGainPct || 0);
         const rMult = Number(ev.rMultiple || 0);
         const pnlColor = pnlEuro >= 0 ? '#34d399' : '#f87171';
+        const srcBadge = t.isDemoAuto
+          ? `<span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,0.18);color:#34d399;border:1px solid #10b981;">🤖 AUTO-LEAD</span>`
+          : `<span style="font-size:9.5px;padding:1px 6px;border-radius:4px;background:rgba(56,189,248,0.18);color:#38bdf8;">👤 MANUELL</span>`;
 
         return `<div class="trade-item">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong>${escapeHtml(t.name)} (${escapeHtml(t.symbol)}) · ${t.leverage}x</strong>
-            <strong style="font-family:var(--font-mono);color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} € (${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)}% | ${rMult.toFixed(2)}R)</strong>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              ${srcBadge}
+              <strong>${escapeHtml(t.name)} (${escapeHtml(t.symbol)}) · ${t.leverage}x Long</strong>
+            </div>
+            <strong style="font-family:var(--font-mono);color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(2)} € (${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)}% | ${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R)</strong>
           </div>
           <div style="font-size:11px;color:#94a3b8;margin-top:4px;font-family:var(--font-mono);">
-            Entry: ${t.entryPrice.toFixed(2)} · Aktuell: ${(ev.currentPrice || t.entryPrice).toFixed(2)} · Empf. SL: <b>${(ev.recommendedStopStock || t.stopLossStock).toFixed(2)}</b>
+            Einsatz: <b>${Number(t.positionSizeEuro || 0).toFixed(0)} €</b> · Entry: ${Number(t.entryPrice).toFixed(2)} € · Aktuell: ${(ev.currentPrice || t.entryPrice).toFixed(2)} € · SL: <b style="color:#fbbf24">${(ev.recommendedStopStock || t.stopLossStock).toFixed(2)} €</b>
           </div>
           <div style="margin-top:6px;padding:6px 8px;background:#070b14;border-radius:6px;font-size:11px;">
             <b>${escapeHtml(ev.stageName || 'Stufe 1: Initial Risk')}:</b> ${escapeHtml(ev.recommendation || 'Stop unter LoD belassen.')}
           </div>
           <div style="margin-top:8px;display:flex;justify-content:flex-end;">
             <button class="btn btn-xs btn-secondary btn-close-trade" data-id="${escapeHtml(t.id)}">
-              🏁 Glattstellen &amp; ins Journal buchen
+              🏁 Jetzt im Demo-Konto verkaufen &amp; Gewinn/Verlust buchen
             </button>
           </div>
         </div>`;
@@ -1079,7 +1215,7 @@ function renderActiveTradesAndJournal() {
         const res = await fetch(`/api/trades/${encodeURIComponent(id)}/close`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
+          body: JSON.stringify({ exitReason: 'Manueller Verkauf im Demo-Depot' })
         });
         const data = await res.json();
         if (data.snapshot) applySnapshot(data.snapshot);
@@ -1088,24 +1224,54 @@ function renderActiveTradesAndJournal() {
   }
 
   const journalContainer = document.getElementById('journalList');
-  if (journal.length === 0) {
-    journalContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Noch keine abgeschlossenen Trades im Journal.</div>`;
+  if (journal.length === 0 && orders.length === 0) {
+    journalContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Noch keine abgeschlossenen Demo-Trades oder Orders im Journal.</div>`;
   } else {
-    journalContainer.innerHTML = journal
-      .slice(0, 20)
+    const journalHtml = journal
+      .slice(0, 15)
       .map((j) => {
         const win = j.pnlEuro >= 0;
-        return `<div class="journal-item">
-          <div style="display:flex;justify-content:space-between;">
-            <strong>${escapeHtml(j.name)} (${escapeHtml(j.symbol)}) · ${j.leverage}x</strong>
-            <strong style="font-family:var(--font-mono);color:${win ? '#34d399' : '#f87171'}">${win ? '+' : ''}${j.pnlEuro.toFixed(0)} € (${win ? '+' : ''}${j.rMultiple.toFixed(2)}R)</strong>
+        const timeStr = j.closedAt ? new Date(j.closedAt).toLocaleTimeString('de-DE') : '';
+        return `<div class="journal-item" style="border-left:3px solid ${win ? '#10b981' : '#ef4444'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong>${win ? '🟢 WIN' : '🔴 LOSS'} · ${escapeHtml(j.name)} (${escapeHtml(j.symbol)}) · ${j.leverage}x</strong>
+            <strong style="font-family:var(--font-mono);color:${win ? '#34d399' : '#f87171'}">${win ? '+' : ''}${Number(j.pnlEuro).toFixed(2)} € (${win ? '+' : ''}${Number(j.rMultiple).toFixed(2)}R)</strong>
           </div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:4px;font-family:var(--font-mono);">
-            Entry ${j.entryPrice} → Exit ${j.exitPrice} (${j.stockGainPct >= 0 ? '+' : ''}${j.stockGainPct}% Aktie | ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct}% Derivat)
+          <div style="font-size:11px;color:#cbd5e1;margin-top:4px;font-family:var(--font-mono);">
+            Entry ${Number(j.entryPrice).toFixed(2)} € → Exit ${Number(j.exitPrice).toFixed(2)} € (${j.stockGainPct >= 0 ? '+' : ''}${j.stockGainPct}% Aktie | ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct}% Derivat)
+          </div>
+          <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;display:flex;justify-content:space-between;">
+            <span>Grund: ${escapeHtml(j.exitReason || 'Exit')}</span>
+            <span>${timeStr ? `${timeStr} Uhr · ` : ''}Konto danach: <b>${Number(j.demoEquityAfterEuro || 10000).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</b></span>
           </div>
         </div>`;
       })
       .join('');
+
+    const ordersHtml = orders
+      .slice(0, 15)
+      .map((o) => {
+        const isBuy = o.action === 'BUY';
+        const tStr = o.timestamp ? new Date(o.timestamp).toLocaleTimeString('de-DE') : '';
+        return `<div class="journal-item" style="opacity:0.9;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;">
+            <strong style="color:${isBuy ? '#38bdf8' : '#34d399'}">${isBuy ? '🛒 DEMO-KAUF (ENTRY)' : '🏁 DEMO-VERKAUF (CLOSE)'} · ${escapeHtml(o.symbol)} (${o.leverage}x)</strong>
+            <span style="font-family:var(--font-mono);color:#94a3b8">${tStr}</span>
+          </div>
+          <div style="font-size:11px;color:#cbd5e1;margin-top:2px;font-family:var(--font-mono);">
+            ${
+              isBuy
+                ? `Kurs: ${Number(o.priceEuro).toFixed(2)} € · Einsatz: <b>${Number(o.positionSizeEuro).toFixed(2)} €</b> (${o.quantityPieces} Stk.) · SL: ${Number(o.stopLossEuro).toFixed(2)} €`
+                : `Entry ${Number(o.entryPriceEuro).toFixed(2)} € → Exit ${Number(o.exitPriceEuro).toFixed(2)} € · Auszahlung: <b>${Number(o.payoutEuro).toFixed(2)} €</b> (${o.pnlEuro >= 0 ? '+' : ''}${Number(o.pnlEuro).toFixed(2)} €)`
+            }
+          </div>
+        </div>`;
+      })
+      .join('');
+
+    journalContainer.innerHTML =
+      (journalHtml ? `<div style="font-size:10.5px;font-weight:700;color:#94a3b8;margin-bottom:4px;">ABGESCHLOSSENE DEMO-TRADES (${journal.length})</div>${journalHtml}` : '') +
+      (ordersHtml ? `<div style="font-size:10.5px;font-weight:700;color:#94a3b8;margin:8px 0 4px;">CHRONOLOGISCHES ORDERBUCH (${orders.length})</div>${ordersHtml}` : '');
   }
 }
 
@@ -1119,6 +1285,10 @@ function handleIncomingLiveAlert(alert) {
       alert,
       ...(state.snapshot.alerts || []).filter((a) => a.id !== alert.id)
     ];
+    if (alert.demoAccount) {
+      state.snapshot.demoAccount = alert.demoAccount;
+      renderDemoAccount();
+    }
     renderAlertsHistory();
   }
 
@@ -1198,7 +1368,7 @@ function renderAlertsHistory() {
         ${
           a.sizing
             ? `<div style="margin-top:6px;padding:5px 8px;background:#070b14;border-radius:5px;font-family:var(--font-mono);font-size:10.5px;color:#34d399;">
-                SL: ${a.sizing.stopLossStock.toFixed(2)} · Hebel ${a.sizing.activeLeverage}x · Kauf: <b>${a.sizing.positionSizeEuro.toFixed(0)} €</b> (Risiko: -${a.sizing.rMaxEuro.toFixed(0)} €)
+                SL: ${a.sizing.stopLossStock.toFixed(2)} € · Hebel ${a.sizing.activeLeverage}x · Kauf: <b>${a.sizing.positionSizeEuro.toFixed(0)} €</b> (Risiko: -${a.sizing.rMaxEuro.toFixed(0)} €)
               </div>`
             : ''
         }
@@ -1251,8 +1421,14 @@ async function runCaseStudySimulation(stage = 'phase4_entry') {
     });
     const data = await res.json();
     if (data.ok) {
+      if (data.snapshot) applySnapshot(data.snapshot);
       state.selectedSymbol = 'SY1.DE';
       await loadChartForSymbol('SY1.DE', false);
+      if (stage === 'phase4_entry') {
+        document.querySelector('.wb-tab[data-wbtab="trades"]')?.click();
+      } else if (stage === 'stagnation_exit') {
+        document.querySelector('.wb-tab[data-wbtab="journal"]')?.click();
+      }
     }
   } catch (err) {
     console.error('Simulations-Fehler:', err);

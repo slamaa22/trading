@@ -124,22 +124,34 @@ export class NotificationManager {
    */
   formatTelegramMessage(alert) {
     const cur = alert.currency || '€';
+    const demo = alert.demoAccount;
     if (alert.kind === 'TRADE_EXIT' || alert.kind === 'TRADE_MANAGEMENT') {
       const isStop = alert.stage === 0;
       const icon = isStop ? '🛑🔴' : '🏁🔴';
       const headerLabel = isStop ? 'LEAD CLOSEN (STOP-LOSS)' : 'LEAD CLOSEN (TAKE-PROFIT / EXIT)';
-      return [
+      const exitLines = [
         `${icon} <b>${headerLabel}</b>`,
         `<b>${escapeHtml(alert.title)}</b>`,
         `━━━━━━━━━━━━━━━━━━━━`,
         `📌 <b>Aktie:</b> ${escapeHtml(alert.name)} (<code>${escapeHtml(alert.symbol)}</code>)`,
         `💶 <b>Exit-Kurs Aktie:</b> <b>${Number(alert.currentPrice).toFixed(2)} ${cur}</b> (${alert.stockGainPct >= 0 ? '+' : ''}${Number(alert.stockGainPct).toFixed(2)}%)`,
-        `📈 <b>Ergebnis Derivat (Hebel ${alert.leverage}x):</b> <b>${alert.derivGainPct >= 0 ? '+' : ''}${Number(alert.derivGainPct).toFixed(1)}%</b> (${alert.pnlEuro >= 0 ? '+' : ''}${Number(alert.pnlEuro).toFixed(0)} € | ${Number(alert.rMultiple).toFixed(2)}R)`,
+        `📈 <b>Ergebnis Derivat (Hebel ${alert.leverage}x):</b> <b>${alert.derivGainPct >= 0 ? '+' : ''}${Number(alert.derivGainPct).toFixed(1)}%</b> (${alert.pnlEuro >= 0 ? '+' : ''}${Number(alert.pnlEuro).toFixed(0)} € | ${Number(alert.rMultiple).toFixed(2)}R)`
+      ];
+      if (demo) {
+        exitLines.push(
+          ``,
+          `💼 <b>Demo-Account Auto-Trade:</b>`,
+          `  • <b>Neues Gesamtkapital:</b> <b>${demo.totalEquityEuro.toFixed(2)} €</b> (${demo.totalReturnEuro >= 0 ? '+' : ''}${demo.totalReturnEuro.toFixed(2)} € | ${demo.totalReturnPct >= 0 ? '+' : ''}${demo.totalReturnPct.toFixed(2)}%)`,
+          `  • <b>Verfügbares Cash:</b> ${demo.cashEuro.toFixed(2)} € · <b>Trefferquote:</b> ${demo.winRatePct}% (${demo.wins}W/${demo.losses}L)`
+        );
+      }
+      exitLines.push(
         ``,
         `⚡ <b>Aktion:</b> Position jetzt vollständig verkaufen / glattstellen!`,
         `📋 <b>Grund:</b> ${escapeHtml(alert.message)}`,
         `⏱ <i>${new Date(alert.timestamp).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin' })} Uhr MEZ</i>`
-      ].join('\n');
+      );
+      return exitLines.join('\n');
     }
 
     const sizing = alert.sizing;
@@ -171,6 +183,14 @@ export class NotificationManager {
         `  • <b>Risiko im Derivat:</b> -${sizing.dDerivatPct.toFixed(1)}% (Max. Verlust: -${sizing.rMaxEuro.toFixed(0)} € = ${sizing.maxRiskPct}% Konto)`,
         `  • <b>Kaufbetrag Derivat:</b> <b>${sizing.positionSizeEuro.toFixed(0)} €</b> (${sizing.accountAllocationPct.toFixed(1)}% vom ${sizing.accountCapital.toFixed(0)} € Konto)`,
         `  • <b>Modell-Zertifikat:</b> ${sizing.quantityPieces} Stk. à ${sizing.modelCertEntryPrice.toFixed(2)} € → <b>Stop-Order bei ${sizing.modelCertStopPrice.toFixed(2)} €</b>`,
+        ``
+      );
+    }
+
+    if (demo) {
+      lines.push(
+        `💼 <b>Demo-Account Auto-Trade ausgeführt:</b>`,
+        `  • <b>Gesamtkapital:</b> <b>${demo.totalEquityEuro.toFixed(2)} €</b> (Investiert: ${demo.investedEuro.toFixed(0)} € | Cash frei: ${demo.cashEuro.toFixed(0)} €)`,
         ``
       );
     }

@@ -40,6 +40,24 @@ const DEFAULT_SETTINGS = {
   telegramChatId: DEFAULT_CHAT_ID
 };
 
+const DEFAULT_DEMO_ACCOUNT = {
+  autoTradeEnabled: true,
+  initialBalanceEuro: 10000,
+  cashEuro: 10000,
+  realizedPnlEuro: 0,
+  totalTrades: 0,
+  wins: 0,
+  losses: 0,
+  equityCurve: [
+    {
+      time: new Date().toISOString(),
+      equityEuro: 10000,
+      label: 'Startkapital'
+    }
+  ],
+  orderHistory: []
+};
+
 export class StrategyScanner {
   constructor(marketData, notifier) {
     this.marketData = marketData;
@@ -80,8 +98,19 @@ export class StrategyScanner {
         // Nur noch bei echten Leads (Phase 4) und beim Closen benachrichtigen
         mergedSettings.minAlertPhase = 4;
         mergedSettings.telegramBotUsername = 'PureSiteTrading_bot';
+        const mergedDemo = {
+          ...DEFAULT_DEMO_ACCOUNT,
+          ...(raw.demoAccount || {}),
+          equityCurve: Array.isArray(raw.demoAccount?.equityCurve) && raw.demoAccount.equityCurve.length > 0
+            ? raw.demoAccount.equityCurve
+            : [...DEFAULT_DEMO_ACCOUNT.equityCurve],
+          orderHistory: Array.isArray(raw.demoAccount?.orderHistory)
+            ? raw.demoAccount.orderHistory
+            : []
+        };
         return {
           settings: mergedSettings,
+          demoAccount: mergedDemo,
           customStocks: Array.isArray(raw.customStocks) ? raw.customStocks : [],
           activeTrades: Array.isArray(raw.activeTrades) ? raw.activeTrades : [],
           journal: Array.isArray(raw.journal) ? raw.journal : []
@@ -92,6 +121,11 @@ export class StrategyScanner {
     }
     return {
       settings: { ...DEFAULT_SETTINGS },
+      demoAccount: {
+        ...DEFAULT_DEMO_ACCOUNT,
+        equityCurve: [...DEFAULT_DEMO_ACCOUNT.equityCurve],
+        orderHistory: []
+      },
       customStocks: [],
       activeTrades: [],
       journal: []
@@ -404,7 +438,7 @@ export class StrategyScanner {
       const sizing = calculateRiskAndPositionSizing({
         entryPrice: analysis.currentPrice || currentPrice,
         lodPrice: analysis.lodPrice || fallbackLod,
-        accountCapital: this.state.settings.accountCapital,
+        accountCapital: this.getDemoMetrics().totalEquityEuro || this.state.settings.accountCapital,
         maxRiskPct: this.state.settings.maxRiskPct,
         noiseBufferPct: this.state.settings.noiseBufferPct,
         stockProfile: stockMeta.profile
@@ -436,27 +470,35 @@ export class StrategyScanner {
 
       this.stockResults.set(stockMeta.symbol, fullRecord);
 
-      // WICHTIG: Benachrichtigung NUR, wenn sich ein echter Kauf-Lead (Phase 4 Entry) ergibt!
+      // WICHTIG: Benachrichtigung & automatischer Demo-Account-Trade NUR bei echtem Kauf-Lead (Phase 4 Entry)!
       const lastSession = m10Bars.length > 0 ? m10Bars[m10Bars.length - 1].sessionDate : 'today';
       if (
         analysis.phase === 4 &&
         this.notifier.shouldTriggerPhaseAlert(stockMeta.symbol, 4, lastSession)
       ) {
-        // Automatisch als aktiven Lead in die Überwachung aufnehmen, damit wir benachrichtigen können, sobald geclosed werden soll!
+        let openedDemoTrade = null;
         const alreadyOpen = this.state.activeTrades.some(
           (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
         );
-        if (!alreadyOpen) {
-          this.openActiveTrade({
+        if (
+          !alreadyOpen &&
+          this.state.demoAccount.autoTradeEnabled !== false &&
+          Number(this.state.demoAccount.cashEuro || 0) >= 250
+        ) {
+          openedDemoTrade = this.openActiveTrade({
             symbol: stockMeta.symbol,
             name: stockMeta.name,
             currency: '€',
+            isDemoAuto: true,
             entryPrice: fullRecord.price,
             lodPrice: analysis.lodPrice,
             stopLossStock: sizing.stopLossStock,
             leverage: sizing.activeLeverage,
             positionSizeEuro: sizing.positionSizeEuro,
-            catalystNote: 'Automatischer Phase-4-Lead (M10 Ausbruch)'
+            quantityPieces: sizing.quantityPieces,
+            certEntryPrice: sizing.modelCertEntryPrice,
+            certStopPrice: sizing.modelCertStopPrice,
+            catalystNote: 'Auto-Trade Demo-Account (Phase-4-Lead M10 Ausbruch)'
           });
         }
 
@@ -467,9 +509,13 @@ export class StrategyScanner {
           index: idxInfo.name,
           currency: '€',
           phase: 4,
-          phaseBadge: '🟢 NEUER LEAD (ENTRY)',
-          title: `NEUER LEAD (KAUFSIGNAL): ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`,
-          message: `${analysis.actionText} – Lead wird jetzt automatisch auf Stagnations-Exit / Stop-Loss überwacht!`,
+          phaseBadge: openedDemoTrade ? '🟢 NEUER LEAD · DEMO GEKAUFT' : '🟢 NEUER LEAD (PHASE 4)',
+          title: openedDemoTrade
+            ? `NEUER LEAD & DEMO-KAUF: ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`
+            : `NEUER LEAD (ENTRY): ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`,
+          message: openedDemoTrade
+            ? `${analysis.actionText} — Demo-Account hat automatisch für ${openedDemoTrade.positionSizeEuro.toFixed(0)} € (${sizing.activeLeverage}x Long) gekauft und überwacht den Exit!`
+            : `${analysis.actionText} — Empfohlene Position: ${sizing.positionSizeEuro.toFixed(0)} € (${sizing.activeLeverage}x Long).`,
           price: fullRecord.price,
           lodPrice: analysis.lodPrice,
           distanceFromLodPct: analysis.distanceFromLodPct,
@@ -482,7 +528,8 @@ export class StrategyScanner {
           peReason: fundamentals.peReason,
           confluenceSignals: analysis.confluenceSignals,
           confluenceCount: analysis.confluenceCount,
-          sizing
+          sizing,
+          demoAccount: this.getDemoMetrics()
         });
       }
 
@@ -494,12 +541,16 @@ export class StrategyScanner {
   }
 
   /**
-   * Überwacht alle offenen Leads/Trades und benachrichtigt NUR, wenn die Position wieder geclosed werden soll
-   * (Stagnations-Exit / Take-Profit, Börsenschluss EOD oder Stop-Loss) – KEIN Spam bei Zwischenstufen!
+   * Überwacht alle offenen Leads/Trades des Demo-Accounts:
+   * - Bei Stufe 2 (>= 1.5R) wird der Stop-Loss im Demo-Account automatisch auf Break-Even (+0,1%) nachgezogen (lautlos ohne Spam).
+   * - Sobald das Close-Signal (Stagnations-Exit, Stop-Loss oder EOD) erreicht wird, verkauft der Demo-Account automatisch,
+   *   bucht Gewinn/Verlust in € auf das Demo-Konto und sendet sofort die Close-Benachrichtigung (Web + Telegram)!
    */
   async evaluateAllActiveTrades() {
-    for (const trade of this.state.activeTrades) {
-      if (trade.status !== 'OPEN') continue;
+    // Kopie des Arrays, da closeActiveTrade Elemente aus this.state.activeTrades entfernt
+    const openTrades = [...this.state.activeTrades].filter((t) => t.status === 'OPEN');
+
+    for (const trade of openTrades) {
       let m10Bars = this.m10Store.get(trade.symbol);
       if (!m10Bars || m10Bars.length === 0) {
         try {
@@ -527,15 +578,27 @@ export class StrategyScanner {
       trade.latestEvaluation = evaluation;
       trade.currency = '€';
 
-      // Benachrichtigung NUR, wenn der Lead geschlossen werden soll (Take-Profit / Stagnation oder Stop-Loss)!
-      const shouldCloseLead =
-        evaluation.alertType === 'STAGNATION_EXIT' ||
-        evaluation.alertType === 'STOP_LOSS_HIT' ||
-        (stockRecord?.marketClock?.isNearClose && evaluation.stockGainPct !== 0);
+      // Automatischer Break-Even Stop-Nachzug im Demo-Account ab 1,5R (lautlos im Hintergrund)
+      if (evaluation.stage >= 2 && evaluation.recommendedStopStock > trade.stopLossStock) {
+        trade.stopLossStock = evaluation.recommendedStopStock;
+        trade.breakEvenActive = true;
+      }
 
-      if (shouldCloseLead && trade.lastExitAlertType !== evaluation.alertType) {
-        trade.lastExitAlertType = evaluation.alertType || 'EOD_EXIT';
-        this.saveState();
+      // Prüfe, ob der Lead geschlossen werden soll (Take-Profit / Stagnation, Stop-Loss oder EOD)
+      const isStopHit = evaluation.alertType === 'STOP_LOSS_HIT';
+      const isStagnationExit = evaluation.alertType === 'STAGNATION_EXIT';
+      const isEodClose = Boolean(stockRecord?.marketClock?.isNearClose && evaluation.stockGainPct !== 0);
+
+      if (isStopHit || isStagnationExit || isEodClose) {
+        const exitReason = isStopHit
+          ? 'Stop-Loss unter Tagestief ausgelöst (Kap. 05)'
+          : isStagnationExit
+            ? 'Stagnations-Exit / Take-Profit am Widerstand (Kap. 06)'
+            : 'EOD Time-Stop vor Börsenschluss (Kap. 6.2)';
+
+        // Im Demo-Account automatisch glattstellen und Gewinn/Verlust realisieren!
+        const closedJournal = this.closeActiveTrade(trade.id, evaluation.currentPrice, exitReason);
+
         await this.notifier.dispatchSimultaneousAlert({
           kind: 'TRADE_EXIT',
           stage: evaluation.stage,
@@ -543,17 +606,17 @@ export class StrategyScanner {
           name: trade.name || trade.symbol,
           currency: '€',
           leverage: trade.leverage,
-          currentPrice: evaluation.currentPrice,
-          stockGainPct: evaluation.stockGainPct,
-          derivGainPct: evaluation.derivGainPct,
-          rMultiple: evaluation.rMultiple,
-          pnlEuro: evaluation.pnlEuro,
+          currentPrice: closedJournal.exitPrice,
+          stockGainPct: closedJournal.stockGainPct,
+          derivGainPct: closedJournal.derivGainPct,
+          rMultiple: closedJournal.rMultiple,
+          pnlEuro: closedJournal.pnlEuro,
           recommendedStopStock: evaluation.recommendedStopStock,
-          title:
-            evaluation.alertType === 'STOP_LOSS_HIT'
-              ? `🛑 LEAD CLOSEN (STOP-LOSS): ${trade.name} unter Tagestief gefallen!`
-              : `🏁 LEAD CLOSEN (TAKE-PROFIT / EXIT): ${trade.name} jetzt glattstellen!`,
-          message: evaluation.recommendation
+          demoAccount: this.getDemoMetrics(),
+          title: isStopHit
+            ? `🛑 LEAD GECLOSED (STOP-LOSS): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`
+            : `🏁 LEAD GECLOSED (TAKE-PROFIT): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
+          message: `${evaluation.recommendation} — Demo-Account Kontostand: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
         });
       }
     }
@@ -614,7 +677,7 @@ export class StrategyScanner {
     const sizing = calculateRiskAndPositionSizing({
       entryPrice: 96.50,
       lodPrice: 95.40,
-      accountCapital: this.state.settings.accountCapital || 10000,
+      accountCapital: this.getDemoMetrics().totalEquityEuro || this.state.settings.accountCapital || 10000,
       maxRiskPct: this.state.settings.maxRiskPct || 5.0,
       noiseBufferPct: 0.21,
       stockProfile: 'conservative',
@@ -659,20 +722,31 @@ export class StrategyScanner {
 
     let alertResult = null;
     if (stage === 'stagnation_exit') {
-      const simTrade = {
-        id: 'sim_case_study_trade',
-        symbol: 'SY1.DE',
-        name: stockMeta.name,
-        currency: '€',
-        entryPrice: 96.50,
-        lodPrice: 95.40,
-        stopLossStock: 95.20,
-        leverage: 8,
-        positionSizeEuro: sizing.positionSizeEuro,
-        entryTime: entryM10Bars[entryM10Bars.length - 1].time,
-        status: 'OPEN'
-      };
-      const evalTrade = evaluateActiveTrade(simTrade, m10Bars, marketClock);
+      // Falls noch kein offener Symrise-Trade im Demo-Account existiert, lege ihn zuerst zum Einstiegskurs 96,50 € an und schließe ihn dann bei 100,30 €!
+      let openSym = this.state.activeTrades.find((t) => t.symbol === 'SY1.DE' && t.status === 'OPEN');
+      if (!openSym) {
+        openSym = this.openActiveTrade({
+          symbol: 'SY1.DE',
+          name: stockMeta.name,
+          currency: '€',
+          entryPrice: 96.50,
+          lodPrice: 95.40,
+          stopLossStock: 95.20,
+          leverage: 8,
+          positionSizeEuro: 4630,
+          quantityPieces: 3858,
+          certEntryPrice: 1.20,
+          certStopPrice: 1.09,
+          catalystNote: 'Playbook-Fallstudie Kap. 08 (8x Turbo Long)'
+        });
+      }
+      const evalTrade = evaluateActiveTrade(openSym, m10Bars, marketClock);
+      const closedJournal = this.closeActiveTrade(
+        openSym.id,
+        evalTrade.currentPrice,
+        'Stagnations-Exit am Widerstand 100,50 € (Kap. 08)'
+      );
+
       alertResult = await this.notifier.dispatchSimultaneousAlert(
         {
           kind: 'TRADE_EXIT',
@@ -681,19 +755,36 @@ export class StrategyScanner {
           name: stockMeta.name,
           currency: '€',
           leverage: 8,
-          currentPrice: evalTrade.currentPrice,
-          stockGainPct: evalTrade.stockGainPct,
-          derivGainPct: evalTrade.derivGainPct,
-          rMultiple: evalTrade.rMultiple,
-          pnlEuro: evalTrade.pnlEuro,
+          currentPrice: closedJournal.exitPrice,
+          stockGainPct: closedJournal.stockGainPct,
+          derivGainPct: closedJournal.derivGainPct,
+          rMultiple: closedJournal.rMultiple,
+          pnlEuro: closedJournal.pnlEuro,
           recommendedStopStock: evalTrade.recommendedStopStock,
-          title: `🏁 LEAD CLOSEN (TAKE-PROFIT): Symrise AG bei 100,30 € (+31,5% im Derivat / +1.458 €)`,
-          message: evalTrade.recommendation
+          demoAccount: this.getDemoMetrics(),
+          title: `🏁 LEAD GECLOSED (TAKE-PROFIT): Symrise AG bei ${closedJournal.exitPrice.toFixed(2)} € (+${closedJournal.derivGainPct.toFixed(1)}% / +${closedJournal.pnlEuro.toFixed(0)} € im Demo-Account!)`,
+          message: `${evalTrade.recommendation} — Neues Demo-Konto Gesamtkapital: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
         },
         { forceTelegram: true }
       );
     } else if (stage === 'phase4_entry') {
-      // Nur bei echtem Lead (Phase 4 Entry) benachrichtigen, NICHT bei Phase 2 oder Phase 3!
+      // Automatisch im Demo-Account kaufen, wenn Phase 4 Entry simuliert wird!
+      const existingOpen = this.state.activeTrades.find((t) => t.symbol === 'SY1.DE' && t.status === 'OPEN');
+      const demoTrade = existingOpen || this.openActiveTrade({
+        symbol: 'SY1.DE',
+        name: stockMeta.name,
+        currency: '€',
+        entryPrice: 96.50,
+        lodPrice: 95.40,
+        stopLossStock: 95.20,
+        leverage: 8,
+        positionSizeEuro: sizing.positionSizeEuro,
+        quantityPieces: sizing.quantityPieces,
+        certEntryPrice: sizing.modelCertEntryPrice,
+        certStopPrice: sizing.modelCertStopPrice,
+        catalystNote: 'Playbook-Fallstudie Kap. 08 (Auto-Buy Lead Phase 4)'
+      });
+
       alertResult = await this.notifier.dispatchSimultaneousAlert(
         {
           kind: 'STRATEGY_SIGNAL',
@@ -702,9 +793,9 @@ export class StrategyScanner {
           index: 'DAX 40',
           currency: '€',
           phase: 4,
-          phaseBadge: '🟢 NEUER LEAD (ENTRY)',
-          title: `NEUER LEAD (KAUFSIGNAL): Symrise AG bricht bei 96,50 € über M10-EMA20 aus!`,
-          message: analysis.actionText,
+          phaseBadge: '🟢 NEUER LEAD · DEMO GEKAUFT',
+          title: `NEUER LEAD & DEMO-KAUF: Symrise AG bei 96,50 € (${demoTrade.positionSizeEuro.toFixed(0)} € · 8x Long)`,
+          message: `${analysis.actionText} — Demo-Account hat automatisch ${demoTrade.quantityPieces || 3858} Stk. Turbo-Long für ${demoTrade.positionSizeEuro.toFixed(0)} € gekauft!`,
           price: latestBar.close,
           lodPrice: analysis.lodPrice,
           distanceFromLodPct: analysis.distanceFromLodPct,
@@ -717,7 +808,8 @@ export class StrategyScanner {
           peReason: fundamentals.peReason,
           confluenceSignals: analysis.confluenceSignals,
           confluenceCount: analysis.confluenceCount,
-          sizing
+          sizing,
+          demoAccount: this.getDemoMetrics()
         },
         { forceTelegram: true }
       );
@@ -731,6 +823,103 @@ export class StrategyScanner {
     return { record: fullRecord, alert: alertResult };
   }
 
+  /**
+   * Berechnet alle Echtzeit-Kennzahlen des Demo-Accounts (Cash, investiertes Kapital, Unrealized PnL, Gesamt-Equity, Win-Rate).
+   */
+  getDemoMetrics() {
+    const demo = this.state.demoAccount || DEFAULT_DEMO_ACCOUNT;
+    let investedEuro = 0;
+    let unrealizedPnlEuro = 0;
+
+    for (const t of this.state.activeTrades) {
+      if (t.status !== 'OPEN') continue;
+      const posEuro = Number(t.positionSizeEuro || 0);
+      investedEuro += posEuro;
+      const rec = this.stockResults.get(t.symbol);
+      const curPrice = Number(t.latestEvaluation?.currentPrice || rec?.price || t.entryPrice);
+      const stockGainPct = t.entryPrice > 0 ? ((curPrice - t.entryPrice) / t.entryPrice) * 100 : 0;
+      const derivGainPct = stockGainPct * Number(t.leverage || 8);
+      const openPnl = posEuro * (derivGainPct / 100);
+      unrealizedPnlEuro += openPnl;
+    }
+
+    const cashEuro = Math.max(0, Math.round(Number(demo.cashEuro || 0) * 100) / 100);
+    const currentPositionsValueEuro = Math.round((investedEuro + unrealizedPnlEuro) * 100) / 100;
+    const totalEquityEuro = Math.round((cashEuro + currentPositionsValueEuro) * 100) / 100;
+    const initialBalanceEuro = Number(demo.initialBalanceEuro || 10000);
+    const totalReturnEuro = Math.round((totalEquityEuro - initialBalanceEuro) * 100) / 100;
+    const totalReturnPct = initialBalanceEuro > 0
+      ? Math.round(((totalEquityEuro - initialBalanceEuro) / initialBalanceEuro) * 10000) / 100
+      : 0;
+    const totalTrades = Number(demo.totalTrades || 0);
+    const wins = Number(demo.wins || 0);
+    const losses = Number(demo.losses || 0);
+    const winRatePct = totalTrades > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0;
+
+    return {
+      autoTradeEnabled: demo.autoTradeEnabled !== false,
+      initialBalanceEuro,
+      cashEuro,
+      investedEuro: Math.round(investedEuro * 100) / 100,
+      unrealizedPnlEuro: Math.round(unrealizedPnlEuro * 100) / 100,
+      realizedPnlEuro: Math.round(Number(demo.realizedPnlEuro || 0) * 100) / 100,
+      totalEquityEuro,
+      totalReturnEuro,
+      totalReturnPct,
+      openPositionsCount: this.state.activeTrades.filter((t) => t.status === 'OPEN').length,
+      totalTrades,
+      closedTradesCount: totalTrades,
+      wins,
+      losses,
+      winRatePct,
+      equityCurve: (demo.equityCurve || []).slice(-60),
+      orderHistory: (demo.orderHistory || []).slice(0, 40)
+    };
+  }
+
+  /**
+   * Setzt den Demo-Account auf Wunsch auf das Startkapital (z. B. 10.000 €) zurück.
+   */
+  resetDemoAccount(initialBalanceInput = 10000) {
+    const startCap = Math.max(1000, Number(initialBalanceInput || 10000));
+    this.state.activeTrades = [];
+    this.state.journal = [];
+    this.state.demoAccount = {
+      autoTradeEnabled: true,
+      initialBalanceEuro: startCap,
+      cashEuro: startCap,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [
+        {
+          time: new Date().toISOString(),
+          equityEuro: startCap,
+          label: 'Reset / Startkapital'
+        }
+      ],
+      orderHistory: []
+    };
+    this.state.settings.accountCapital = startCap;
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics()
+    });
+    return this.getDemoMetrics();
+  }
+
+  toggleDemoAutoTrade(enabled) {
+    this.state.demoAccount.autoTradeEnabled = Boolean(enabled);
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics()
+    });
+    return this.getDemoMetrics();
+  }
+
   openActiveTrade(payload) {
     const symbol = String(payload.symbol || '').toUpperCase();
     const record = this.stockResults.get(symbol);
@@ -738,19 +927,41 @@ export class StrategyScanner {
     const lodPrice = Number(payload.lodPrice || record?.analysis?.lodPrice || entryPrice * 0.985);
     const stopLossStock = Number(payload.stopLossStock || record?.sizing?.stopLossStock || lodPrice * 0.998);
     const leverage = Number(payload.leverage || record?.sizing?.activeLeverage || 8);
-    const positionSizeEuro = Number(payload.positionSizeEuro || record?.sizing?.positionSizeEuro || 2500);
+
+    const demo = this.state.demoAccount;
+    const desiredSize = Number(payload.positionSizeEuro || record?.sizing?.positionSizeEuro || 2500);
+    const availableCash = Math.max(0, Number(demo.cashEuro ?? 10000));
+
+    // Wenn kein Cash mehr frei ist (unter 250 €), kann kein neuer Auto-Trade eröffnet werden
+    if (availableCash < 250 && payload.isDemoAuto) {
+      return null;
+    }
+
+    const positionSizeEuro = availableCash >= 250
+      ? Math.round(Math.min(desiredSize, availableCash) * 100) / 100
+      : Math.round(desiredSize * 100) / 100;
+
+    // Ziehe Kaufbetrag vom verfügbaren Demo-Cash ab
+    demo.cashEuro = Math.max(0, Math.round((availableCash - positionSizeEuro) * 100) / 100);
+
+    const certEntryPrice = Number(payload.certEntryPrice || record?.sizing?.modelCertEntryPrice || 1.20);
+    const quantityPieces = Number(payload.quantityPieces || Math.max(1, Math.floor(positionSizeEuro / certEntryPrice)));
 
     const trade = {
-      id: `trade_${Date.now()}`,
+      id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       symbol,
       name: payload.name || record?.name || symbol,
-      currency: payload.currency || record?.currency || 'EUR',
-      entryPrice,
-      lodPrice,
-      stopLossStock,
+      currency: '€',
+      isDemoAuto: Boolean(payload.isDemoAuto ?? true),
+      entryPrice: Math.round(entryPrice * 100) / 100,
+      lodPrice: Math.round(lodPrice * 100) / 100,
+      stopLossStock: Math.round(stopLossStock * 100) / 100,
       leverage,
       positionSizeEuro,
-      catalystNote: payload.catalystNote || 'Temporäre Überreaktion / Playbook A-Setup',
+      quantityPieces,
+      certEntryPrice,
+      certStopPrice: Number(payload.certStopPrice || record?.sizing?.modelCertStopPrice || certEntryPrice * 0.9),
+      catalystNote: payload.catalystNote || 'Phase-4-Lead (M10 Ausbruch)',
       peAtEntry: record?.fundamentals?.peValue || null,
       entryTime: Math.floor(Date.now() / 1000),
       openedAt: new Date().toISOString(),
@@ -764,6 +975,27 @@ export class StrategyScanner {
     if (m10Bars.length > 0) {
       trade.latestEvaluation = evaluateActiveTrade(trade, m10Bars, record?.marketClock || {});
     }
+
+    demo.orderHistory = [
+      {
+        id: `ord_buy_${Date.now()}`,
+        action: 'BUY',
+        timestamp: trade.openedAt,
+        time: trade.openedAt,
+        side: 'BUY (LEAD ENTRY)',
+        symbol: trade.symbol,
+        name: trade.name,
+        priceEuro: trade.entryPrice,
+        stockPriceEuro: trade.entryPrice,
+        leverage: trade.leverage,
+        positionSizeEuro: trade.positionSizeEuro,
+        amountEuro: trade.positionSizeEuro,
+        quantityPieces: trade.quantityPieces,
+        stopLossEuro: trade.stopLossStock,
+        note: trade.catalystNote
+      },
+      ...(demo.orderHistory || [])
+    ].slice(0, 50);
 
     this.state.activeTrades.unshift(trade);
     this.saveState();
@@ -781,17 +1013,32 @@ export class StrategyScanner {
     );
 
     const stockGainPct = ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100;
-    const derivGainPct = stockGainPct * trade.leverage;
-    const pnlEuro = trade.positionSizeEuro * (derivGainPct / 100);
+    const derivGainPct = Math.max(-99, stockGainPct * trade.leverage);
+    const pnlEuro = Math.round(trade.positionSizeEuro * (derivGainPct / 100) * 100) / 100;
+    const payoutEuro = Math.max(0, Math.round((trade.positionSizeEuro + pnlEuro) * 100) / 100);
     const riskPerShare = Math.max(0.01, trade.entryPrice - trade.stopLossStock);
     const rMultiple = (exitPrice - trade.entryPrice) / riskPerShare;
     const stopDistancePct = (riskPerShare / trade.entryPrice) * 100;
+
+    // Buche Rückfluss (Kaufbetrag + Gewinn/Verlust) auf das Demo-Cash-Konto
+    const demo = this.state.demoAccount;
+    demo.cashEuro = Math.round((Number(demo.cashEuro || 0) + payoutEuro) * 100) / 100;
+    demo.realizedPnlEuro = Math.round((Number(demo.realizedPnlEuro || 0) + pnlEuro) * 100) / 100;
+    demo.totalTrades = Number(demo.totalTrades || 0) + 1;
+    if (pnlEuro >= 0) {
+      demo.wins = Number(demo.wins || 0) + 1;
+    } else {
+      demo.losses = Number(demo.losses || 0) + 1;
+    }
+
+    this.state.activeTrades.splice(idx, 1);
+    const updatedMetrics = this.getDemoMetrics();
 
     const journalEntry = {
       id: `journal_${Date.now()}`,
       symbol: trade.symbol,
       name: trade.name,
-      currency: trade.currency,
+      currency: '€',
       openedAt: trade.openedAt,
       closedAt: new Date().toISOString(),
       catalystAndPe: `${trade.catalystNote}${trade.peAtEntry ? ` (KGV: ${trade.peAtEntry}x)` : ''}`,
@@ -802,15 +1049,53 @@ export class StrategyScanner {
       exitPrice: Math.round(exitPrice * 100) / 100,
       leverage: trade.leverage,
       positionSizeEuro: Math.round(trade.positionSizeEuro),
+      payoutEuro,
       stockGainPct: Math.round(stockGainPct * 100) / 100,
       derivGainPct: Math.round(derivGainPct * 10) / 10,
-      pnlEuro: Math.round(pnlEuro * 100) / 100,
+      pnlEuro,
       rMultiple: Math.round(rMultiple * 100) / 100,
+      demoEquityAfterEuro: updatedMetrics.totalEquityEuro,
       exitReason
     };
 
-    this.state.activeTrades.splice(idx, 1);
+    demo.orderHistory = [
+      {
+        id: `ord_sell_${Date.now()}`,
+        action: 'SELL',
+        timestamp: journalEntry.closedAt,
+        time: journalEntry.closedAt,
+        side: pnlEuro >= 0 ? 'SELL (TAKE-PROFIT)' : 'SELL (STOP-LOSS)',
+        symbol: trade.symbol,
+        name: trade.name,
+        entryPriceEuro: trade.entryPrice,
+        exitPriceEuro: journalEntry.exitPrice,
+        stockPriceEuro: journalEntry.exitPrice,
+        leverage: trade.leverage,
+        payoutEuro,
+        amountEuro: payoutEuro,
+        pnlEuro,
+        derivGainPct: journalEntry.derivGainPct,
+        rMultiple: journalEntry.rMultiple,
+        note: exitReason
+      },
+      ...(demo.orderHistory || [])
+    ].slice(0, 50);
+
     this.state.journal.unshift(journalEntry);
+
+    demo.equityCurve = [
+      ...(demo.equityCurve || []),
+      {
+        time: journalEntry.closedAt,
+        equityEuro: updatedMetrics.totalEquityEuro,
+        pnlEuro,
+        label: `${trade.symbol} (${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} €)`
+      }
+    ].slice(-60);
+
+    // Passe das Berechnungs-Kapital dynamisch an den neuen Kontostand des Demo-Accounts an (Zinseszins / Compounding)
+    this.state.settings.accountCapital = Math.round(updatedMetrics.totalEquityEuro);
+
     this.saveState();
     return journalEntry;
   }
@@ -835,6 +1120,7 @@ export class StrategyScanner {
       lastScanAt: this.lastScanAt,
       nextScanAt: this.nextScanAt,
       settings: this.state.settings,
+      demoAccount: this.getDemoMetrics(),
       indexRegimes: this.indexRegimes,
       stocks,
       activeTrades: this.state.activeTrades,

@@ -171,7 +171,8 @@ app.post('/api/telegram/test', async (req, res) => {
           { name: 'Hammer-Absorption am Tagestief 95,40 €', active: true }
         ],
         confluenceCount: 4,
-        sizing: testSizing
+        sizing: testSizing,
+        demoAccount: scanner.getDemoMetrics()
       },
       { forceTelegram: true }
     );
@@ -186,9 +187,28 @@ app.post('/api/simulate-case-study', async (req, res) => {
   try {
     const stage = req.body.stage || 'phase4_entry';
     const result = await scanner.triggerCaseStudySimulation(stage);
-    res.json({ ok: true, ...result });
+    res.json({ ok: true, ...result, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/demo/reset', (req, res) => {
+  try {
+    const initialBalanceEuro = Number(req.body?.initialBalanceEuro || 10000);
+    const demoAccount = scanner.resetDemoAccount(initialBalanceEuro);
+    res.json({ ok: true, demoAccount, snapshot: scanner.getSnapshot() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/demo/toggle', (req, res) => {
+  try {
+    const demoAccount = scanner.toggleDemoAutoTrade(Boolean(req.body?.autoTradeEnabled));
+    res.json({ ok: true, demoAccount, snapshot: scanner.getSnapshot() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
   }
 });
 
