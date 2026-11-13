@@ -40,17 +40,17 @@ export class NotificationManager {
   }
 
   /**
-   * Prüft, ob für dieses Setup bereits in derselben Phase am selben Tag alarmiert wurde.
+   * Prüft, ob für dieses Setup bereits ein Entry-Lead am selben Tag alarmiert wurde.
+   * WICHTIG: Es wird ausschließlich bei echten Kaufsignal-Leads (Phase 4 Entry) alarmiert –
+   * KEINE Benachrichtigungen bei bloßen Phasenveränderungen (Phase 1, 2 oder 3)!
    */
   shouldTriggerPhaseAlert(symbol, phase, sessionDate = 'today') {
-    const settings = this.getSettings();
-    const minAlertPhase = settings.minAlertPhase ?? 2; // Standard: Ab Phase 2 (Watchlist-Alarm) & Phase 3/4
-    if (phase < minAlertPhase) return false;
+    if (phase !== 4) return false;
 
-    const key = `${symbol}:phase_${phase}:${sessionDate}`;
+    const key = `${symbol}:lead_entry:${sessionDate}`;
     const lastSent = this.sentDedupeMap.get(key);
-    // Kein doppelter Spam innerhalb von 45 Minuten für exakt dieselbe Phase derselben Aktie
-    if (lastSent && Date.now() - lastSent < 45 * 60 * 1000) {
+    // Kein doppelter Spam innerhalb von 60 Minuten für denselben Lead
+    if (lastSent && Date.now() - lastSent < 60 * 60 * 1000) {
       return false;
     }
     this.sentDedupeMap.set(key, Date.now());
@@ -118,33 +118,30 @@ export class NotificationManager {
   }
 
   /**
-   * Formatiert die Playbook-konforme Telegram-Benachrichtigung (HTML).
+   * Formatiert die Playbook-konforme Telegram-Benachrichtigung (HTML) für:
+   * 1) NEUER LEAD (KAUFSIGNAL / ENTRY)
+   * 2) LEAD CLOSEN (EXIT / GLATTSTELLEN)
    */
   formatTelegramMessage(alert) {
     const cur = alert.currency || '€';
     if (alert.kind === 'TRADE_EXIT' || alert.kind === 'TRADE_MANAGEMENT') {
-      const icon = alert.stage === 3 ? '🏁' : alert.stage === 0 ? '🛑' : '🛡️';
+      const isStop = alert.stage === 0;
+      const icon = isStop ? '🛑🔴' : '🏁🔴';
+      const headerLabel = isStop ? 'LEAD CLOSEN (STOP-LOSS)' : 'LEAD CLOSEN (TAKE-PROFIT / EXIT)';
       return [
-        `${icon} <b>${escapeHtml(alert.title)}</b>`,
+        `${icon} <b>${headerLabel}</b>`,
+        `<b>${escapeHtml(alert.title)}</b>`,
         `━━━━━━━━━━━━━━━━━━━━`,
         `📌 <b>Aktie:</b> ${escapeHtml(alert.name)} (<code>${escapeHtml(alert.symbol)}</code>)`,
-        `💶 <b>Aktueller Kurs:</b> ${Number(alert.currentPrice).toFixed(2)} ${cur} (${alert.stockGainPct >= 0 ? '+' : ''}${Number(alert.stockGainPct).toFixed(2)}%)`,
-        `📈 <b>Derivat (Hebel ${alert.leverage}x):</b> ${alert.derivGainPct >= 0 ? '+' : ''}${Number(alert.derivGainPct).toFixed(1)}% (${alert.pnlEuro >= 0 ? '+' : ''}${Number(alert.pnlEuro).toFixed(0)} € | ${Number(alert.rMultiple).toFixed(2)}R)`,
-        `🎯 <b>Empfohlener Stop-Loss:</b> ${Number(alert.recommendedStopStock).toFixed(2)} ${cur}`,
+        `💶 <b>Exit-Kurs Aktie:</b> <b>${Number(alert.currentPrice).toFixed(2)} ${cur}</b> (${alert.stockGainPct >= 0 ? '+' : ''}${Number(alert.stockGainPct).toFixed(2)}%)`,
+        `📈 <b>Ergebnis Derivat (Hebel ${alert.leverage}x):</b> <b>${alert.derivGainPct >= 0 ? '+' : ''}${Number(alert.derivGainPct).toFixed(1)}%</b> (${alert.pnlEuro >= 0 ? '+' : ''}${Number(alert.pnlEuro).toFixed(0)} € | ${Number(alert.rMultiple).toFixed(2)}R)`,
         ``,
-        `💡 <b>Handlungsanweisung (Kap. 06):</b>`,
-        `${escapeHtml(alert.message)}`,
+        `⚡ <b>Aktion:</b> Position jetzt vollständig verkaufen / glattstellen!`,
+        `📋 <b>Grund:</b> ${escapeHtml(alert.message)}`,
         `⏱ <i>${new Date(alert.timestamp).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin' })} Uhr MEZ</i>`
       ].join('\n');
     }
 
-    const phaseIcons = {
-      4: '🚨🟢',
-      3: '⚡🟡',
-      2: '👁️🔵',
-      1: '⛔🔴'
-    };
-    const icon = phaseIcons[alert.phase] || '🔔';
     const sizing = alert.sizing;
     const confluences = (alert.confluenceSignals || [])
       .filter((c) => c.active)
@@ -152,12 +149,12 @@ export class NotificationManager {
       .join('\n');
 
     const lines = [
-      `${icon} <b>${escapeHtml(alert.title)}</b>`,
+      `🚨🟢 <b>NEUER LEAD (KAUFSIGNAL): ${escapeHtml(alert.name)}</b>`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `🏢 <b>${escapeHtml(alert.name)}</b> (<code>${escapeHtml(alert.symbol)}</code> · ${escapeHtml(alert.index || '')})`,
-      `💰 <b>Kurs aktuell:</b> <b>${Number(alert.price).toFixed(2)} ${cur}</b> (${alert.intradayChangePct >= 0 ? '+' : ''}${Number(alert.intradayChangePct).toFixed(2)}% heute | Dip: ${Number(alert.dipFromSwingHighPct || alert.intradayChangePct).toFixed(1)}%)`,
-      `📉 <b>Tagestief (LoD):</b> <b>${Number(alert.lodPrice).toFixed(2)} ${cur}</b> (Abstand: +${Number(alert.distanceFromLodPct).toFixed(2)}% | ${alert.barsSinceFirstLow || 0} M10-Kerzen)`,
-      `📊 <b>M10-Indikatoren:</b> RSI(14): ${Number(alert.rsi14).toFixed(1)} | EMA20: ${Number(alert.ema20).toFixed(2)} | VWAP: ${Number(alert.vwap).toFixed(2)}`,
+      `💰 <b>Einstiegskurs (Entry):</b> <b>${Number(alert.price).toFixed(2)} ${cur}</b> (${alert.intradayChangePct >= 0 ? '+' : ''}${Number(alert.intradayChangePct).toFixed(2)}% heute | Dip: ${Number(alert.dipFromSwingHighPct || alert.intradayChangePct).toFixed(1)}%)`,
+      `📉 <b>Tagestief (LoD):</b> <b>${Number(alert.lodPrice).toFixed(2)} ${cur}</b> (Abstand: +${Number(alert.distanceFromLodPct).toFixed(2)}% | ${alert.barsSinceFirstLow || 0} M10-Kerzen gehalten)`,
+      `📊 <b>M10-Trigger:</b> RSI(14): ${Number(alert.rsi14).toFixed(1)} | EMA20: ${Number(alert.ema20).toFixed(2)} | VWAP: ${Number(alert.vwap).toFixed(2)}`,
       `🏛 <b>Fundamental / KGV:</b> ${escapeHtml(alert.peReason || 'Qualitätsaktie')}`,
       ``
     ];
@@ -301,11 +298,9 @@ export class NotificationManager {
                 `✅ <b>@PureSiteTrading_bot erfolgreich verbunden!</b>`,
                 `Deine Chat-ID (<code>${incomingChatId}</code>) ist jetzt fest im Server hinterlegt.`,
                 ``,
-                `Du erhältst ab sofort <b>im exakt selben Moment wie im Web-Dashboard</b> automatische Echtzeit-Alarme bei:`,
-                `• 🔵 <b>Phase 2:</b> Tagestief (LoD) &amp; Absorption erkannt`,
-                `• 🟡 <b>Phase 3:</b> Sekundärer Test &amp; Boden-Kompression (3–6 M10-Kerzen)`,
-                `• 🟢 <b>Phase 4:</b> Impuls-Trigger (Kaufsignal + 5%-Risiko- &amp; Hebel-5x-10x-Berechnung)`,
-                `• 🏁 <b>Exit-Alarme:</b> Stufe 2 Break-Even &amp; Stufe 3 Stagnations-Exit`,
+                `Du erhältst ab sofort <b>nur noch relevante Signale (kein Phasen-Spam!)</b> gleichzeitig im Web-Dashboard &amp; per Telegram:`,
+                `• 🟢 <b>1. NEUER LEAD (Kaufsignal / Entry):</b> Sobald eine Aktie alle Phasen bis zum M10-Ausbruch (Phase 4) durchlaufen hat (inkl. Hebel 5x–10x, Kaufbetrag &amp; Stop-Loss). Der Lead wird automatisch überwacht!`,
+                `• 🔴 <b>2. LEAD CLOSEN (Exit-Signal):</b> Sobald du die Position wieder glattstellen sollst (Stagnations-Exit / Take-Profit am Widerstand oder Stop-Loss)!`,
                 ``,
                 `Befehle direkt im Chat: /status · /top`
               ].join('\n')

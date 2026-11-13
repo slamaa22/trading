@@ -232,7 +232,40 @@ function updateTradingViewChartData() {
   state.vwapSeries.setData(vwapData);
   state.rsiSeries.setData(rsiData);
 
-  // Entferne alte Preislinien (LoD & Stop-Loss) und zeichne aktuelle ein
+  // Zeichne Kerzen-Marker für Tagestief (LoD) und Phase-4-Kaufsignal (Lead) direkt in den Chart
+  const markers = [];
+  if (candles.length > 0) {
+    let minBar = candles[0];
+    for (const c of candles.slice(-45)) {
+      if (c.low <= minBar.low) minBar = c;
+    }
+    if (minBar) {
+      markers.push({
+        time: minBar.time,
+        position: 'belowBar',
+        color: '#f59e0b',
+        shape: 'arrowUp',
+        text: `LoD ${minBar.low.toFixed(2)} €`
+      });
+    }
+    const rec = state.chartRecord;
+    if (rec?.analysis?.phase === 4 && candles.length > 1) {
+      const lastBar = candles[candles.length - 1];
+      if (lastBar.time !== minBar?.time) {
+        markers.push({
+          time: lastBar.time,
+          position: 'belowBar',
+          color: '#10b981',
+          shape: 'arrowUp',
+          text: `BUY LEAD ${lastBar.close.toFixed(2)} €`
+        });
+      }
+    }
+  }
+  markers.sort((a, b) => a.time - b.time);
+  state.candleSeries.setMarkers(markers);
+
+  // Entferne alte Preislinien (LoD & Stop-Loss) und zeichne aktuelle in € ein
   if (state.lodPriceLine) {
     state.candleSeries.removePriceLine(state.lodPriceLine);
     state.lodPriceLine = null;
@@ -253,7 +286,7 @@ function updateTradingViewChartData() {
       lineWidth: 2,
       lineStyle: LWC.LineStyle.Dashed,
       axisLabelVisible: true,
-      title: `Tagestief (LoD) ${lodPrice.toFixed(2)}`
+      title: `Tagestief (LoD) ${lodPrice.toFixed(2)} €`
     });
   }
 
@@ -264,7 +297,7 @@ function updateTradingViewChartData() {
       lineWidth: 2,
       lineStyle: LWC.LineStyle.Dotted,
       axisLabelVisible: true,
-      title: `Stop-Loss ${slPrice.toFixed(2)}`
+      title: `Stop-Loss ${slPrice.toFixed(2)} €`
     });
   }
 
@@ -278,14 +311,14 @@ function bindUIEvents() {
   document.getElementById('btnScanNow').addEventListener('click', async () => {
     const btn = document.getElementById('btnScanNow');
     btn.disabled = true;
-    btn.textContent = '⏳ Scanne...';
+    btn.textContent = '⏳ Scanne 196...';
     try {
       const res = await fetch('/api/scan', { method: 'POST' });
       const snap = await res.json();
       applySnapshot(snap);
     } finally {
       btn.disabled = false;
-      btn.textContent = '↻ Scan';
+      btn.textContent = '↻ Komplett-Scan';
     }
   });
 
@@ -316,7 +349,7 @@ function bindUIEvents() {
     });
   });
 
-  // Region-Filter Chips
+  // Index-Filter Chips (alle 7 Leitindizes)
   document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((chip) => {
     chip.addEventListener('click', () => {
       document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((c) => c.classList.remove('active'));
@@ -326,11 +359,19 @@ function bindUIEvents() {
     });
   });
 
-  // Suche
+  // Suche & Sortierung
   document.getElementById('inputSearchStock').addEventListener('input', (e) => {
     state.searchQuery = e.target.value.trim().toLowerCase();
     renderStockList();
   });
+
+  const sortSelect = document.getElementById('selectSortStocks');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', (e) => {
+      state.sortBy = e.target.value;
+      renderStockList();
+    });
+  }
 
   // Aktie hinzufügen
   document.getElementById('btnAddSymbol').addEventListener('click', addStockFromInput);
@@ -408,7 +449,7 @@ function connectWebSocket() {
         const dot = document.getElementById('wsStatusDot');
         if (data.isScanning) {
           dot.classList.add('scanning');
-          document.getElementById('scanStatusText').textContent = 'Scanne M10...';
+          document.getElementById('scanStatusText').textContent = 'Scanne 196 Aktien...';
         }
       } else if (data.type === 'LIVE_ALERT') {
         handleIncomingLiveAlert(data.alert);
@@ -456,11 +497,12 @@ function applySnapshot(snapshot) {
     const t = snapshot.lastScanAt
       ? new Date(snapshot.lastScanAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : 'Bereit';
-    document.getElementById('scanStatusText').textContent = `${loadedCount}/${stocks.length} Live · ${t}`;
+    document.getElementById('scanStatusText').textContent = `${loadedCount}/${stocks.length} Live (€) · ${t}`;
   }
 
   updateTelegramStatusUI();
   renderIndexRegimes();
+  renderTopRadarStrip();
   renderStockList();
   renderActiveTradesAndJournal();
   renderAlertsHistory();
@@ -492,15 +534,15 @@ function updateTelegramStatusUI() {
   if (s.telegramBotToken && s.telegramChatId) {
     bar.classList.add('connected');
     dot.classList.add('connected');
-    title.textContent = `@PureSiteTrading_bot · Verbunden (ID: ${s.telegramChatId})`;
-    sub.textContent = 'Echtzeit-Alarme werden synchron an Web & Telegram gesendet';
-    openBtn.textContent = '📲 Telegram öffnen';
+    title.textContent = `@PureSiteTrading_bot · Verbunden (${s.telegramChatId})`;
+    sub.textContent = 'Nur Lead-Entry & Lead-Close Alarme (Kein Phasen-Spam)';
+    openBtn.textContent = '📲 Bot öffnen';
   } else {
     bar.classList.remove('connected');
     dot.classList.remove('connected');
-    title.textContent = '@PureSiteTrading_bot (API-Key hinterlegt)';
-    sub.textContent = 'Klicke auf „1. Bot in Telegram öffnen (/start)“ & danach auf „2. Chat-ID koppeln“';
-    openBtn.textContent = '📲 1. Bot in Telegram öffnen (/start)';
+    title.textContent = '@PureSiteTrading_bot';
+    sub.textContent = 'Klicke auf „Bot öffnen“ & danach auf „Koppeln“';
+    openBtn.textContent = '📲 Bot öffnen';
   }
 }
 
@@ -520,11 +562,10 @@ async function quickDetectChatFromHeader() {
         state.snapshot.settings.telegramChatId = data.chatId;
       }
       updateTelegramStatusUI();
-      btn.textContent = `✅ Gekoppelt (${data.chatId})`;
-      // Direkt Begrüßungs-/Test-Alarm schicken
+      btn.textContent = `✅ ID: ${data.chatId}`;
       await triggerTestAlert();
     } else {
-      btn.textContent = '⚠️ Erst /start im Bot klicken!';
+      btn.textContent = '⚠️ Erst /start senden!';
       window.open('https://t.me/PureSiteTrading_bot?start=connect', '_blank');
     }
   } catch {
@@ -562,14 +603,68 @@ function renderIndexRegimes() {
     .join('');
 }
 
-// --- SIDEBAR: AKTIEN-LISTE (ALLE 51 QUALITÄTSAKTIEN) ---
+// --- TOP MEAN-REVERSION RADAR STRIP (TOP 6 KANDIDATEN AUS 196 AKTIEN) ---
+
+function renderTopRadarStrip() {
+  const grid = document.getElementById('topRadarGrid');
+  if (!grid) return;
+  const stocks = state.snapshot?.stocks || [];
+  if (stocks.length === 0) return;
+
+  // Sortiere die 6 spannendsten Setups (höchste Phase >= 2, danach stärkste Tagesverlierer / Swing-Dips)
+  const topCandidates = [...stocks]
+    .filter((s) => s.price > 0)
+    .sort((a, b) => {
+      const pa = a.analysis?.phase ?? 0;
+      const pb = b.analysis?.phase ?? 0;
+      const scoreA = (pa >= 2 ? pa * 10 : 0) + (a.analysis?.confluenceCount || 0) * 2 - (a.intradayChangePct || 0);
+      const scoreB = (pb >= 2 ? pb * 10 : 0) + (b.analysis?.confluenceCount || 0) * 2 - (b.intradayChangePct || 0);
+      return scoreB - scoreA;
+    })
+    .slice(0, 6);
+
+  grid.innerHTML = topCandidates
+    .map((s) => {
+      const p = s.analysis?.phase ?? 0;
+      const chg = Number(s.intradayChangePct || 0);
+      const chgColor = chg >= 0 ? '#34d399' : '#f87171';
+      const isSel = s.symbol === state.selectedSymbol;
+      const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
+      const shortBadge = p === 4 ? '🟢 LEAD P4' : p === 3 ? '⚡ P3 BODEN' : p === 2 ? '👁️ P2 LOD' : p === 1 ? '⛔ P1 FALL' : 'NEUTRAL';
+
+      return `<div class="radar-card ${isSel ? 'active' : ''} ${p === 4 ? 'lead-p4' : ''}" data-radar-sym="${escapeHtml(s.symbol)}">
+        <div class="rc-row1">
+          <span class="rc-sym">${escapeHtml(s.symbol)}</span>
+          <span class="rc-price">${Number(s.price).toFixed(2)} €</span>
+        </div>
+        <div class="rc-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+        <div class="rc-row3">
+          <span class="phase-tag ${tagClass}" style="padding:1px 5px;font-size:9.5px">${shortBadge}</span>
+          <span style="color:${chgColor};font-weight:700">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  grid.querySelectorAll('.radar-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      const sym = card.getAttribute('data-radar-sym');
+      state.selectedSymbol = sym;
+      renderTopRadarStrip();
+      renderStockList();
+      loadChartForSymbol(sym, false);
+    });
+  });
+}
+
+// --- SIDEBAR: AKTIEN-LISTE (ALLE 196 QUALITÄTSAKTIEN IN EURO €) ---
 
 function renderStockList() {
   const container = document.getElementById('stockListContainer');
   const stocks = state.snapshot?.stocks || [];
   const withPrice = stocks.filter((s) => s.price > 0).length;
 
-  document.getElementById('universeCountLabel').textContent = `${withPrice} / ${stocks.length} Qualitätsaktien mit Live-Kurs`;
+  document.getElementById('universeCountLabel').textContent = `${withPrice} / ${stocks.length} Aktien in Euro (€) aktiv`;
 
   // Zähler für Filter-Pills aktualisieren
   const p4Cnt = stocks.filter((s) => s.analysis?.phase === 4).length;
@@ -590,9 +685,9 @@ function renderStockList() {
     if (state.activeFilter === 'phase2' && phase !== 2) return false;
     if (state.activeFilter === 'dips' && s.intradayChangePct > -2.0 && s.dipFromSwingHighPct > -3.8) return false;
 
-    if (state.activeRegion === 'DAX' && !['DAX', 'MDAX'].includes(s.index)) return false;
-    if (state.activeRegion === 'ATX' && !['ATX', 'SMI', 'EUROSTOXX'].includes(s.index)) return false;
-    if (state.activeRegion === 'US' && s.region !== 'US') return false;
+    if (state.activeRegion && state.activeRegion !== 'ALL') {
+      if (s.index !== state.activeRegion) return false;
+    }
 
     if (state.searchQuery) {
       const hay = `${s.symbol} ${s.name} ${s.indexName} ${s.sector}`.toLowerCase();
@@ -601,10 +696,37 @@ function renderStockList() {
     return true;
   });
 
+  // Sortierung anwenden
+  const sortMode = state.sortBy || 'phase';
+  filtered.sort((a, b) => {
+    if (sortMode === 'intraday') {
+      return (a.intradayChangePct || 0) - (b.intradayChangePct || 0);
+    }
+    if (sortMode === 'swing') {
+      return (a.dipFromSwingHighPct || 0) - (b.dipFromSwingHighPct || 0);
+    }
+    if (sortMode === 'pe') {
+      const peA = a.fundamentals?.peValue > 0 ? a.fundamentals.peValue : 999;
+      const peB = b.fundamentals?.peValue > 0 ? b.fundamentals.peValue : 999;
+      return peA - peB;
+    }
+    if (sortMode === 'name') {
+      return String(a.name).localeCompare(String(b.name), 'de');
+    }
+    // Standard: Setup-Phase & Konfluenz, danach stärkster Tagesverlust
+    const pa = a.analysis?.phase ?? -9;
+    const pb = b.analysis?.phase ?? -9;
+    if (pb !== pa) return pb - pa;
+    const ca = a.analysis?.confluenceCount ?? 0;
+    const cb = b.analysis?.confluenceCount ?? 0;
+    if (cb !== ca) return cb - ca;
+    return (a.intradayChangePct || 0) - (b.intradayChangePct || 0);
+  });
+
   if (filtered.length === 0) {
     container.innerHTML = `<div style="padding:24px 14px;text-align:center;color:#64748b;font-size:12px;">
       Keine Aktie in diesem Filter.<br/><br/>
-      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b>, um ein komplettes Phase-4-Setup live zu simulieren!
+      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b>, um einen kompletten Phase-4-Lead live zu simulieren!
     </div>`;
     return;
   }
@@ -618,7 +740,7 @@ function renderStockList() {
       const chg = Number(s.intradayChangePct || 0);
       const chgCls = chg >= 0 ? 'pos' : 'neg';
       const conf = s.analysis?.confluenceCount || 0;
-      const lod = s.analysis?.lodPrice ? s.analysis.lodPrice.toFixed(2) : '--';
+      const lod = s.analysis?.lodPrice ? `${s.analysis.lodPrice.toFixed(2)} €` : '--';
       const pe = s.fundamentals?.peValue ? `KGV ${s.fundamentals.peValue}x` : '';
 
       const dotsHtml = [0, 1, 2, 3]
@@ -632,10 +754,10 @@ function renderStockList() {
               <span class="sc-sym">${escapeHtml(s.symbol)}</span>
               <span class="sc-idx">${escapeHtml(s.indexName)}</span>
             </div>
-            <span class="sc-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+            <span class="sc-name" title="${escapeHtml(s.name)} · ${escapeHtml(s.sector)}">${escapeHtml(s.name)}</span>
           </div>
           <div class="sc-price-col">
-            <div class="sc-price">${Number(s.price || 0).toFixed(2)} ${escapeHtml(s.currency)}</div>
+            <div class="sc-price">${Number(s.price || 0).toFixed(2)} €</div>
             <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% <span style="color:#64748b;font-weight:400">(${Number(s.dipFromSwingHighPct || 0).toFixed(1)}% 20T)</span></div>
           </div>
         </div>
@@ -655,6 +777,7 @@ function renderStockList() {
     el.addEventListener('click', () => {
       const sym = el.getAttribute('data-symbol');
       state.selectedSymbol = sym;
+      renderTopRadarStrip();
       renderStockList();
       loadChartForSymbol(sym, false);
     });
@@ -683,7 +806,6 @@ async function loadChartForSymbol(symbol, forceRefresh = false) {
 
 function renderSelectedStockDetails(rec) {
   if (!rec) return;
-  const cur = rec.currency || 'EUR';
   document.getElementById('detailStockName').textContent = rec.name;
   document.getElementById('detailStockSymbol').textContent = rec.symbol;
   document.getElementById('detailStockIndex').textContent = `${rec.indexName} · ${rec.sector}`;
@@ -693,10 +815,15 @@ function renderSelectedStockDetails(rec) {
   mhEl.className = `mkt-badge ${rec.marketClock?.isOpen ? 'open' : 'closed'}`;
 
   const f = rec.fundamentals || {};
+  const peEl = document.getElementById('detailPeBadge');
+  if (peEl) {
+    peEl.textContent = f.peValue ? `KGV ${f.peValue}x` : 'Profitabel';
+  }
+
   document.getElementById('detailFundamentalSummary').innerHTML =
     `<b>Bewertung:</b> ${escapeHtml(f.peReason || '-')} &nbsp;·&nbsp; <b>Dip-Analyse:</b> ${escapeHtml(f.dipReason || '-')} &nbsp;·&nbsp; <b>Schutzfilter:</b> ${escapeHtml(f.earningsNote || '-')}`;
 
-  document.getElementById('detailCurrentPrice').textContent = `${Number(rec.price || 0).toFixed(2)} ${cur}`;
+  document.getElementById('detailCurrentPrice').textContent = `${Number(rec.price || 0).toFixed(2)} €`;
 
   const chgEl = document.getElementById('detailIntradayChange');
   const chg = Number(rec.intradayChangePct || 0);
@@ -707,11 +834,11 @@ function renderSelectedStockDetails(rec) {
   const sw = Number(rec.dipFromSwingHighPct || 0);
   swingEl.textContent = `${sw.toFixed(1)}% v. 20T-Hoch`;
 
-  // Hero Mini-KPIs
+  // Hero Mini-KPIs (alles in €)
   const a = rec.analysis || {};
   const s = rec.sizing || {};
-  document.getElementById('heroKpiLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} ${cur}` : '--';
-  document.getElementById('heroKpiSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} ${cur}` : '--';
+  document.getElementById('heroKpiLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} €` : '--';
+  document.getElementById('heroKpiSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} €` : '--';
   document.getElementById('heroKpiLev').textContent = `${s.activeLeverage || 8}x`;
   document.getElementById('heroKpiBuy').textContent = s.positionSizeEuro ? `${s.positionSizeEuro.toFixed(0)} €` : '--';
 
@@ -732,11 +859,11 @@ function renderSelectedStockDetails(rec) {
   actionBox.style.borderLeftColor =
     phase === 4 ? '#10b981' : phase === 3 ? '#f59e0b' : phase === 2 ? '#38bdf8' : phase === 1 ? '#ef4444' : '#64748b';
 
-  // Chart-Legende
-  document.getElementById('legEma20').textContent = a.ema20 ? a.ema20.toFixed(2) : '--';
-  document.getElementById('legVwap').textContent = a.vwap ? a.vwap.toFixed(2) : '--';
-  document.getElementById('legLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} ${cur}` : '--';
-  document.getElementById('legSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} ${cur}` : '--';
+  // Chart-Legende (alles in €)
+  document.getElementById('legEma20').textContent = a.ema20 ? `${a.ema20.toFixed(2)} €` : '--';
+  document.getElementById('legVwap').textContent = a.vwap ? `${a.vwap.toFixed(2)} €` : '--';
+  document.getElementById('legLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} €` : '--';
+  document.getElementById('legSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} €` : '--';
   document.getElementById('legRsi').textContent = a.rsi14 ? a.rsi14.toFixed(1) : '--';
 
   // 4 Konfluenz-Signale

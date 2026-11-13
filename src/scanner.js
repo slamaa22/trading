@@ -22,20 +22,22 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 const DEFAULT_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN || '8545580896:AAH_cLbkPJMpfnhjdo5t5bhh5dde38EWE6I';
+const DEFAULT_CHAT_ID =
+  process.env.TELEGRAM_CHAT_ID || '9065309684';
 
 const DEFAULT_SETTINGS = {
   accountCapital: 10000,
   maxRiskPct: 5.0,
   noiseBufferPct: 0.20,
   minDipPct: -2.0,
-  minAlertPhase: 2,
+  minAlertPhase: 4,
   scanIntervalSec: 60,
   soundAlertsEnabled: true,
   browserNotificationsEnabled: true,
   telegramEnabled: true,
   telegramBotToken: DEFAULT_BOT_TOKEN,
   telegramBotUsername: 'PureSiteTrading_bot',
-  telegramChatId: process.env.TELEGRAM_CHAT_ID || ''
+  telegramChatId: DEFAULT_CHAT_ID
 };
 
 export class StrategyScanner {
@@ -48,6 +50,13 @@ export class StrategyScanner {
     this.lastScanAt = null;
     this.nextScanAt = null;
     this.scanTimer = null;
+
+    // Live Wechselkurse nach EUR (Fallback: 1 USD = 0.92 EUR, 1 CHF = 1.06 EUR)
+    this.fxToEur = {
+      EUR: 1.0,
+      USD: 0.925,
+      CHF: 1.065
+    };
 
     this.indexRegimes = {};
     this.stockResults = new Map();
@@ -65,6 +74,11 @@ export class StrategyScanner {
         if (!mergedSettings.telegramBotToken) {
           mergedSettings.telegramBotToken = DEFAULT_BOT_TOKEN;
         }
+        if (!mergedSettings.telegramChatId) {
+          mergedSettings.telegramChatId = DEFAULT_CHAT_ID;
+        }
+        // Nur noch bei echten Leads (Phase 4) und beim Closen benachrichtigen
+        mergedSettings.minAlertPhase = 4;
         mergedSettings.telegramBotUsername = 'PureSiteTrading_bot';
         return {
           settings: mergedSettings,
@@ -166,9 +180,44 @@ export class StrategyScanner {
   }
 
   /**
+   * Liefert den Umrechnungsfaktor in Euro (€) für eine Aktie.
+   */
+  getFxRateToEur(nativeCurrency = 'EUR') {
+    const cur = String(nativeCurrency || 'EUR').toUpperCase();
+    if (cur === 'EUR' || cur === '€') return 1.0;
+    if (cur === 'USD' || cur === '$') return this.fxToEur.USD || 0.925;
+    if (cur === 'CHF') return this.fxToEur.CHF || 1.065;
+    return 1.0;
+  }
+
+  /**
+   * Rechnet ein Quote-Objekt vollständig in Euro (€) um.
+   */
+  convertQuoteToEur(quote = {}, fx = 1.0) {
+    if (!quote || fx === 1.0) {
+      return { ...quote, currency: '€' };
+    }
+    const conv = (val) => (Number.isFinite(val) && val > 0 ? Math.round(val * fx * 100) / 100 : val);
+    return {
+      ...quote,
+      regularMarketPrice: conv(quote.regularMarketPrice),
+      regularMarketPreviousClose: conv(quote.regularMarketPreviousClose),
+      chartPreviousClose: conv(quote.chartPreviousClose),
+      regularMarketOpen: conv(quote.regularMarketOpen),
+      regularMarketDayHigh: conv(quote.regularMarketDayHigh),
+      regularMarketDayLow: conv(quote.regularMarketDayLow),
+      fiftyTwoWeekHigh: conv(quote.fiftyTwoWeekHigh),
+      fiftyTwoWeekLow: conv(quote.fiftyTwoWeekLow),
+      sma200: conv(quote.sma200),
+      sma50: conv(quote.sma50),
+      currency: '€'
+    };
+  }
+
+  /**
    * Zweistufiger Scan:
-   * 1) Sofort-Batch-Quote für alle 51 Aktien & 7 Indizes (< 1s) -> Alle Kurse, KGVs, LoDs sofort im UI!
-   * 2) Sanft getakteter M10-Intraday-Scan über die Aktien ohne Rate-Limiting.
+   * 1) Sofort-Batch-Quote für alle 196 Aktien, 7 Indizes & EUR-Wechselkurse (< 1s) -> Alle Kurse in € sofort im UI!
+   * 2) Sanft getakteter M10-Intraday-Scan über die wichtigsten Dips ohne Rate-Limiting.
    */
   async runFullScan({ reason = 'manual' } = {}) {
     if (this.isScanning) return this.getSnapshot();
@@ -179,9 +228,20 @@ export class StrategyScanner {
       const universe = this.getUniverse();
       const indexSymbols = Object.values(BENCHMARK_INDICES).map((i) => i.symbol);
       const stockSymbols = universe.map((u) => u.symbol);
+      const fxSymbols = ['EURUSD=X', 'EURCHF=X'];
 
-      // 1. Batch-Quotes für alle Indizes & Aktien in 2 Requests abrufen (< 500ms)
-      const quoteMap = await this.marketData.fetchBatchQuotes([...indexSymbols, ...stockSymbols]);
+      // 1. Batch-Quotes für Indizes, FX & alle 196 Aktien abrufen
+      const quoteMap = await this.marketData.fetchBatchQuotes([...fxSymbols, ...indexSymbols, ...stockSymbols]);
+
+      // Live Wechselkurse aktualisieren (Yahoo: EURUSD=X = wie viele USD für 1 EUR)
+      const eurUsdQuote = quoteMap.get('EURUSD=X');
+      const eurChfQuote = quoteMap.get('EURCHF=X');
+      if (eurUsdQuote?.regularMarketPrice > 0.5) {
+        this.fxToEur.USD = 1 / eurUsdQuote.regularMarketPrice;
+      }
+      if (eurChfQuote?.regularMarketPrice > 0.5) {
+        this.fxToEur.CHF = 1 / eurChfQuote.regularMarketPrice;
+      }
 
       // 2. Gesamtmarkt-Regime (Schutzfilter 2, Kapitel 2.3) auswerten
       for (const [key, idxMeta] of Object.entries(BENCHMARK_INDICES)) {
@@ -203,31 +263,40 @@ export class StrategyScanner {
         };
       }
 
-      // 3. Sofort-Auswertung mit den Batch-Quotes für ALLE Aktien (damit jede Aktie sofort ihren echten Preis hat!)
+      // 3. Sofort-Auswertung mit den Batch-Quotes (in EUR umgerechnet) für ALLE 196 Aktien
       for (const stockMeta of universe) {
         const q = quoteMap.get(stockMeta.symbol);
-        // Bewahre bestehende Simulations-Setups, falls der Nutzer gerade eine Fallstudie geladen hat
         const existing = this.stockResults.get(stockMeta.symbol);
         if (existing?.isSimulation && reason === 'scheduled') continue;
         await this.evaluateSingleStock(stockMeta, q, { fetchIntraday: false });
       }
 
-      // Sofort Zwischen-Snapshot ans UI pushen (alle 51 Aktien haben jetzt sofort Kurse & KGV!)
+      // Sofort Zwischen-Snapshot ans UI pushen (alle 196 Aktien haben jetzt sofort Kurse in €!)
       this.notifier.broadcastWs({
         type: 'SCAN_COMPLETED',
         snapshot: this.getSnapshot()
       });
 
-      // 4. Jetzt sortieren nach Dip-Relevanz und für alle Aktien sanft die 5m->M10 Kerzen nachladen
+      // 4. Sortieren nach Dip-Relevanz (größte Tagesverlierer + noch nicht geladene M10-Charts zuerst)
       const rankedUniverse = [...universe].sort((a, b) => {
+        const hasA = this.m10Store.has(a.symbol) ? 1 : 0;
+        const hasB = this.m10Store.has(b.symbol) ? 1 : 0;
         const qa = quoteMap.get(a.symbol);
         const qb = quoteMap.get(b.symbol);
-        return (qa?.regularMarketChangePercent ?? 0) - (qb?.regularMarketChangePercent ?? 0);
+        const chgA = qa?.regularMarketChangePercent ?? 0;
+        const chgB = qb?.regularMarketChangePercent ?? 0;
+        const isDipA = chgA <= -1.5 ? 0 : 1;
+        const isDipB = chgB <= -1.5 ? 0 : 1;
+        if (isDipA !== isDipB) return isDipA - isDipB;
+        if (hasA !== hasB) return hasA - hasB;
+        return chgA - chgB;
       });
 
-      const batchSize = 3;
-      for (let i = 0; i < rankedUniverse.length; i += batchSize) {
-        const slice = rankedUniverse.slice(i, i + batchSize);
+      // Pro Scan-Zyklus die 60 wichtigsten Dips/Kandidaten tiefenscannen
+      const deepScanTargets = rankedUniverse.slice(0, 60);
+      const batchSize = 4;
+      for (let i = 0; i < deepScanTargets.length; i += batchSize) {
+        const slice = deepScanTargets.slice(i, i + batchSize);
         await Promise.all(
           slice.map((stockMeta) => {
             const existing = this.stockResults.get(stockMeta.symbol);
@@ -237,11 +306,10 @@ export class StrategyScanner {
             });
           })
         );
-        // Kurze Pause (80ms) gegen Yahoo Rate-Limits
-        await new Promise((r) => setTimeout(r, 80));
+        await new Promise((r) => setTimeout(r, 60));
       }
 
-      // 5. Aktive Trades auf Stufe 2 (Break-Even) & Stufe 3 (Dynamischer Stagnations-Exit) prüfen
+      // 5. Aktive Leads/Trades auf Close-Signal (Stagnations-Exit / Stop-Loss / EOD) prüfen
       await this.evaluateAllActiveTrades();
 
       this.lastScanAt = new Date().toISOString();
@@ -257,25 +325,36 @@ export class StrategyScanner {
   }
 
   /**
-   * Analysiert eine einzelne Aktie komplett nach Playbook Kapitel 02–05.
+   * Analysiert eine einzelne Aktie komplett in Euro (€) nach Playbook Kapitel 02–05.
+   * Benachrichtigt NUR bei neuem Lead (Phase 4 Entry) und überwacht ihn automatisch auf das Close-Signal!
    */
-  async evaluateSingleStock(stockMeta, quote = {}, { fetchIntraday = true, forceRefresh = false } = {}) {
+  async evaluateSingleStock(stockMeta, rawQuote = {}, { fetchIntraday = true, forceRefresh = false } = {}) {
     try {
       const idxInfo = BENCHMARK_INDICES[stockMeta.index] || BENCHMARK_INDICES.DAX;
       const indexRegime = this.indexRegimes[stockMeta.index] || {};
       const marketClock = checkReferenceMarketOpen(idxInfo.region);
+      const fx = this.getFxRateToEur(stockMeta.currency || rawQuote?.currency || 'EUR');
 
+      let quote = this.convertQuoteToEur(rawQuote || {}, fx);
       let m10Bars = this.m10Store.get(stockMeta.symbol) || [];
 
       if (fetchIntraday || forceRefresh) {
         try {
           const intradayData = await this.marketData.fetchIntraday5m(stockMeta.symbol, { forceRefresh });
           const tz = idxInfo.region === 'US' ? 'America/New_York' : 'Europe/Berlin';
-          const rawM10 = resampleToM10(intradayData.bars, tz);
+          // 5m-Kerzen vor der M10-Aggregation in Euro (€) umrechnen
+          const eur5mBars = (intradayData.bars || []).map((b) => ({
+            ...b,
+            open: Math.round(b.open * fx * 100) / 100,
+            high: Math.round(b.high * fx * 100) / 100,
+            low: Math.round(b.low * fx * 100) / 100,
+            close: Math.round(b.close * fx * 100) / 100
+          }));
+          const rawM10 = resampleToM10(eur5mBars, tz);
           m10Bars = enrichM10Indicators(rawM10);
           this.m10Store.set(stockMeta.symbol, m10Bars);
 
-          const m = intradayData.meta || {};
+          const m = this.convertQuoteToEur(intradayData.meta || {}, fx);
           quote = {
             ...quote,
             regularMarketPrice:
@@ -287,7 +366,7 @@ export class StrategyScanner {
             regularMarketDayLow: quote?.regularMarketDayLow || m.regularMarketDayLow,
             fiftyTwoWeekHigh: quote?.fiftyTwoWeekHigh || m.fiftyTwoWeekHigh,
             fiftyTwoWeekLow: quote?.fiftyTwoWeekLow || m.fiftyTwoWeekLow,
-            currency: quote?.currency || m.currency || stockMeta.currency
+            currency: '€'
           };
         } catch {
           // Nutze Batch-Quote + gecachte M10-Kerzen
@@ -309,7 +388,7 @@ export class StrategyScanner {
       const dailySupports = findDailySupportZones([], quote || {}, currentPrice);
       let analysis = analyzeM10BottomFormation(m10Bars, dailySupports, fundamentals);
 
-      // Falls M10-Kerzen noch geladen werden, fülle LoD & Kurs aus dem Echtzeit-Quote!
+      // Falls M10-Kerzen noch geladen werden, fülle LoD & Kurs aus dem Echtzeit-Quote (in €)!
       const fallbackLod = quote?.regularMarketDayLow || currentPrice * 0.985;
       if (!analysis.lodPrice && fallbackLod > 0) {
         const distPct = ((currentPrice - fallbackLod) / fallbackLod) * 100;
@@ -341,7 +420,8 @@ export class StrategyScanner {
         region: idxInfo.region,
         sector: stockMeta.sector,
         profile: stockMeta.profile,
-        currency: quote?.currency || stockMeta.currency || 'EUR',
+        nativeCurrency: stockMeta.currency || 'EUR',
+        currency: '€',
         price: Math.round((analysis.currentPrice || currentPrice || 0) * 100) / 100,
         intradayChangePct: fundamentals.intradayChangePct,
         dipFromSwingHighPct: fundamentals.dipFromSwingHighPct,
@@ -356,26 +436,40 @@ export class StrategyScanner {
 
       this.stockResults.set(stockMeta.symbol, fullRecord);
 
+      // WICHTIG: Benachrichtigung NUR, wenn sich ein echter Kauf-Lead (Phase 4 Entry) ergibt!
       const lastSession = m10Bars.length > 0 ? m10Bars[m10Bars.length - 1].sessionDate : 'today';
       if (
-        analysis.phase >= 2 &&
-        this.notifier.shouldTriggerPhaseAlert(stockMeta.symbol, analysis.phase, lastSession)
+        analysis.phase === 4 &&
+        this.notifier.shouldTriggerPhaseAlert(stockMeta.symbol, 4, lastSession)
       ) {
-        const phaseTitles = {
-          2: `PHASE 2 WATCHLIST-ALARM: ${stockMeta.name} markiert Tagestief (LoD)`,
-          3: `PHASE 3 VORBEREITUNG: ${stockMeta.name} verteidigt Boden im M10-Chart`,
-          4: `PHASE 4 KAUFSIGNAL (ENTRY): ${stockMeta.name} bricht im M10 nach oben aus!`
-        };
+        // Automatisch als aktiven Lead in die Überwachung aufnehmen, damit wir benachrichtigen können, sobald geclosed werden soll!
+        const alreadyOpen = this.state.activeTrades.some(
+          (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
+        );
+        if (!alreadyOpen) {
+          this.openActiveTrade({
+            symbol: stockMeta.symbol,
+            name: stockMeta.name,
+            currency: '€',
+            entryPrice: fullRecord.price,
+            lodPrice: analysis.lodPrice,
+            stopLossStock: sizing.stopLossStock,
+            leverage: sizing.activeLeverage,
+            positionSizeEuro: sizing.positionSizeEuro,
+            catalystNote: 'Automatischer Phase-4-Lead (M10 Ausbruch)'
+          });
+        }
+
         await this.notifier.dispatchSimultaneousAlert({
           kind: 'STRATEGY_SIGNAL',
           symbol: stockMeta.symbol,
           name: stockMeta.name,
           index: idxInfo.name,
-          currency: fullRecord.currency,
-          phase: analysis.phase,
-          phaseBadge: analysis.phaseBadge,
-          title: phaseTitles[analysis.phase] || `${stockMeta.name}: Phase ${analysis.phase}`,
-          message: analysis.actionText,
+          currency: '€',
+          phase: 4,
+          phaseBadge: '🟢 NEUER LEAD (ENTRY)',
+          title: `NEUER LEAD (KAUFSIGNAL): ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`,
+          message: `${analysis.actionText} – Lead wird jetzt automatisch auf Stagnations-Exit / Stop-Loss überwacht!`,
           price: fullRecord.price,
           lodPrice: analysis.lodPrice,
           distanceFromLodPct: analysis.distanceFromLodPct,
@@ -399,6 +493,10 @@ export class StrategyScanner {
     }
   }
 
+  /**
+   * Überwacht alle offenen Leads/Trades und benachrichtigt NUR, wenn die Position wieder geclosed werden soll
+   * (Stagnations-Exit / Take-Profit, Börsenschluss EOD oder Stop-Loss) – KEIN Spam bei Zwischenstufen!
+   */
   async evaluateAllActiveTrades() {
     for (const trade of this.state.activeTrades) {
       if (trade.status !== 'OPEN') continue;
@@ -406,7 +504,16 @@ export class StrategyScanner {
       if (!m10Bars || m10Bars.length === 0) {
         try {
           const intraday = await this.marketData.fetchIntraday5m(trade.symbol);
-          m10Bars = enrichM10Indicators(resampleToM10(intraday.bars));
+          const stockMeta = DEFAULT_UNIVERSE.find((u) => u.symbol === trade.symbol);
+          const fx = this.getFxRateToEur(stockMeta?.currency || 'EUR');
+          const eurBars = (intraday.bars || []).map((b) => ({
+            ...b,
+            open: Math.round(b.open * fx * 100) / 100,
+            high: Math.round(b.high * fx * 100) / 100,
+            low: Math.round(b.low * fx * 100) / 100,
+            close: Math.round(b.close * fx * 100) / 100
+          }));
+          m10Bars = enrichM10Indicators(resampleToM10(eurBars));
           this.m10Store.set(trade.symbol, m10Bars);
         } catch {
           continue;
@@ -418,38 +525,23 @@ export class StrategyScanner {
       if (!evaluation) continue;
 
       trade.latestEvaluation = evaluation;
+      trade.currency = '€';
 
-      if (evaluation.alertType === 'MOVE_TO_BREAKEVEN' && !trade.breakEvenNotified) {
-        trade.breakEvenNotified = true;
-        this.saveState();
-        await this.notifier.dispatchSimultaneousAlert({
-          kind: 'TRADE_MANAGEMENT',
-          stage: 2,
-          symbol: trade.symbol,
-          name: trade.name || trade.symbol,
-          currency: trade.currency || 'EUR',
-          leverage: trade.leverage,
-          currentPrice: evaluation.currentPrice,
-          stockGainPct: evaluation.stockGainPct,
-          derivGainPct: evaluation.derivGainPct,
-          rMultiple: evaluation.rMultiple,
-          pnlEuro: evaluation.pnlEuro,
-          recommendedStopStock: evaluation.recommendedStopStock,
-          title: `STUFE 2 FREE-RIDE: Stop-Loss bei ${trade.name} auf Break-Even ziehen!`,
-          message: evaluation.recommendation
-        });
-      } else if (
-        (evaluation.alertType === 'STAGNATION_EXIT' || evaluation.alertType === 'STOP_LOSS_HIT') &&
-        trade.lastExitAlertType !== evaluation.alertType
-      ) {
-        trade.lastExitAlertType = evaluation.alertType;
+      // Benachrichtigung NUR, wenn der Lead geschlossen werden soll (Take-Profit / Stagnation oder Stop-Loss)!
+      const shouldCloseLead =
+        evaluation.alertType === 'STAGNATION_EXIT' ||
+        evaluation.alertType === 'STOP_LOSS_HIT' ||
+        (stockRecord?.marketClock?.isNearClose && evaluation.stockGainPct !== 0);
+
+      if (shouldCloseLead && trade.lastExitAlertType !== evaluation.alertType) {
+        trade.lastExitAlertType = evaluation.alertType || 'EOD_EXIT';
         this.saveState();
         await this.notifier.dispatchSimultaneousAlert({
           kind: 'TRADE_EXIT',
           stage: evaluation.stage,
           symbol: trade.symbol,
           name: trade.name || trade.symbol,
-          currency: trade.currency || 'EUR',
+          currency: '€',
           leverage: trade.leverage,
           currentPrice: evaluation.currentPrice,
           stockGainPct: evaluation.stockGainPct,
@@ -458,9 +550,9 @@ export class StrategyScanner {
           pnlEuro: evaluation.pnlEuro,
           recommendedStopStock: evaluation.recommendedStopStock,
           title:
-            evaluation.alertType === 'STAGNATION_EXIT'
-              ? `STUFE 3 STAGNATIONS-EXIT: ${trade.name} jetzt glattstellen (Take Profit)!`
-              : `STOP-LOSS ALARM: ${trade.name} unter Tagestief gefallen!`,
+            evaluation.alertType === 'STOP_LOSS_HIT'
+              ? `🛑 LEAD CLOSEN (STOP-LOSS): ${trade.name} unter Tagestief gefallen!`
+              : `🏁 LEAD CLOSEN (TAKE-PROFIT / EXIT): ${trade.name} jetzt glattstellen!`,
           message: evaluation.recommendation
         });
       }
@@ -549,7 +641,7 @@ export class StrategyScanner {
       region: 'EU',
       sector: stockMeta.sector,
       profile: stockMeta.profile,
-      currency: 'EUR',
+      currency: '€',
       price: latestBar.close,
       intradayChangePct: fundamentals.intradayChangePct,
       dipFromSwingHighPct: fundamentals.dipFromSwingHighPct,
@@ -565,13 +657,13 @@ export class StrategyScanner {
 
     this.stockResults.set(symbol, fullRecord);
 
-    let alertResult;
+    let alertResult = null;
     if (stage === 'stagnation_exit') {
       const simTrade = {
         id: 'sim_case_study_trade',
         symbol: 'SY1.DE',
         name: stockMeta.name,
-        currency: 'EUR',
+        currency: '€',
         entryPrice: 96.50,
         lodPrice: 95.40,
         stopLossStock: 95.20,
@@ -587,7 +679,7 @@ export class StrategyScanner {
           stage: 3,
           symbol: 'SY1.DE',
           name: stockMeta.name,
-          currency: 'EUR',
+          currency: '€',
           leverage: 8,
           currentPrice: evalTrade.currentPrice,
           stockGainPct: evalTrade.stockGainPct,
@@ -595,27 +687,23 @@ export class StrategyScanner {
           rMultiple: evalTrade.rMultiple,
           pnlEuro: evalTrade.pnlEuro,
           recommendedStopStock: evalTrade.recommendedStopStock,
-          title: `STUFE 3 STAGNATIONS-EXIT (Fallstudie Kap. 08): Symrise AG bei 100,30 € (+31,5% im Derivat)`,
+          title: `🏁 LEAD CLOSEN (TAKE-PROFIT): Symrise AG bei 100,30 € (+31,5% im Derivat / +1.458 €)`,
           message: evalTrade.recommendation
         },
         { forceTelegram: true }
       );
-    } else {
-      const titleMap = {
-        phase2_watchlist: 'PHASE 2 WATCHLIST-ALARM (Fallstudie Kap. 08): Symrise AG bildet Hammer am Tagestief 95,40 €',
-        phase3_prepare: 'PHASE 3 KOMPRESSION (Fallstudie Kap. 08): Symrise AG verteidigt Tagestief 95,40 € über 4 M10-Kerzen',
-        phase4_entry: 'PHASE 4 KAUFSIGNAL / ENTRY (Fallstudie Kap. 08): Symrise AG bricht bei 96,50 € über M10-EMA20 aus!'
-      };
+    } else if (stage === 'phase4_entry') {
+      // Nur bei echtem Lead (Phase 4 Entry) benachrichtigen, NICHT bei Phase 2 oder Phase 3!
       alertResult = await this.notifier.dispatchSimultaneousAlert(
         {
           kind: 'STRATEGY_SIGNAL',
           symbol,
           name: stockMeta.name,
           index: 'DAX 40',
-          currency: 'EUR',
-          phase: analysis.phase,
-          phaseBadge: analysis.phaseBadge,
-          title: titleMap[stage] || `FALLSTUDIE KAP. 08: ${analysis.phaseName}`,
+          currency: '€',
+          phase: 4,
+          phaseBadge: '🟢 NEUER LEAD (ENTRY)',
+          title: `NEUER LEAD (KAUFSIGNAL): Symrise AG bricht bei 96,50 € über M10-EMA20 aus!`,
           message: analysis.actionText,
           price: latestBar.close,
           lodPrice: analysis.lodPrice,

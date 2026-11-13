@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mean-Reversion Playbook Terminal · M10 Scanner &amp; Telegram Alerts</title>
+  <title>Mean-Reversion Playbook Terminal · 196 Qualitätsaktien · M10 Scanner &amp; Telegram</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -20,31 +20,31 @@
       </div>
       <div class="brand-text">
         <div class="brand-title-row">
-          <h1>Mean-Reversion Playbook Terminal</h1>
-          <span class="pill-tag pill-emerald">LONG-ONLY · HEBEL 5x–10x</span>
+          <h1>Mean-Reversion Institutional Terminal</h1>
+          <span class="pill-tag pill-emerald">196 QUALITÄTSAKTIEN · HEBEL 5x–10x</span>
         </div>
-        <p>Antizyklischer 10-Minuten-Scanner · 4-Phasen-Bodenbildung · 5%-Risiko-Rechner · Synchroner Web- &amp; Telegram-Push</p>
+        <p>Antizyklischer 10-Minuten-Scanner (DAX · MDAX · ATX · SMI · EuroStoxx · S&amp;P 500 · Nasdaq 100) · 5%-Risiko-Rechner</p>
       </div>
     </div>
 
-    <!-- TELEGRAM BOT QUICK-CONNECT BAR (@PureSiteTrading_bot) -->
-    <div class="tg-connect-bar" id="tgConnectBar">
+    <!-- COMPACT TELEGRAM STATUS PILL (@PureSiteTrading_bot) -->
+    <div class="tg-connect-bar connected" id="tgConnectBar">
       <div class="tg-bot-info">
-        <span class="tg-dot" id="tgStatusDot"></span>
+        <span class="tg-dot connected" id="tgStatusDot"></span>
         <div>
-          <div class="tg-bot-title" id="tgBotTitle">@PureSiteTrading_bot</div>
-          <div class="tg-bot-sub" id="tgBotSub">API-Key aktiv · Klicke rechts auf „Bot in Telegram starten“</div>
+          <div class="tg-bot-title" id="tgBotTitle">@PureSiteTrading_bot · Verbunden</div>
+          <div class="tg-bot-sub" id="tgBotSub">Synchrone Echtzeit-Alarme aktiv (Web + Telegram)</div>
         </div>
       </div>
       <div class="tg-bot-actions">
-        <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" rel="noopener" class="btn btn-tg-link" id="btnOpenTelegramBot">
-          📲 1. Bot in Telegram öffnen (/start)
+        <a href="https://t.me/PureSiteTrading_bot" target="_blank" rel="noopener" class="btn btn-tg-link btn-xs" id="btnOpenTelegramBot">
+          📲 Bot öffnen
         </a>
-        <button class="btn btn-secondary btn-sm" id="btnQuickDetectChat">
-          🔍 2. Chat-ID koppeln
+        <button class="btn btn-secondary btn-xs" id="btnQuickDetectChat" title="Chat-ID neu koppeln">
+          🔄 Koppeln
         </button>
-        <button class="btn btn-secondary btn-sm" id="btnQuickTestAlert" title="Schickt sofort einen Test-Alarm gleichzeitig an dieses Dashboard und an deinen Telegram-Bot">
-          🚀 Test-Alarm
+        <button class="btn btn-emerald btn-xs" id="btnQuickTestAlert" title="Schickt sofort einen Test-Alarm gleichzeitig an dieses Dashboard und an deinen Telegram-Bot">
+          🚀 Test-Push
         </button>
       </div>
     </div>
@@ -53,11 +53,11 @@
     <div class="header-controls">
       <div class="scan-indicator" id="scanStatusPill">
         <span class="status-dot" id="wsStatusDot"></span>
-        <span id="scanStatusText">Lade Marktdaten...</span>
+        <span id="scanStatusText">Synchronisiere 196 Aktien...</span>
       </div>
 
       <button class="btn btn-secondary" id="btnScanNow">
-        ↻ Scan
+        ↻ Komplett-Scan
       </button>
 
       <div class="sim-dropdown">
@@ -106,7 +106,7 @@
   <!-- GESAMTMARKT-REGIME TICKER BAR (KAPITEL 2.3) -->
   <div class="regime-ribbon">
     <div class="regime-ribbon-label">
-      <span>🛡️ LEITINDIZES (KAP. 2.3)</span>
+      <span>🛡️ 7 LEITINDIZES (KAP. 2.3)</span>
     </div>
     <div class="regime-ribbon-track" id="indexRegimeItems">
       <!-- Dynamisch gefüllt -->
@@ -131,38 +131,51 @@
 
   <!-- MAIN 2-COLUMN WORKSPACE (SIDEBAR WATCHLIST + SPACIOUS MAIN TERMINAL) -->
   <div class="terminal-layout">
-    <!-- LEFT SIDEBAR: LIVE STOCK SCANNER (ALL 51 QUALITY STOCKS) -->
+    <!-- LEFT SIDEBAR: LIVE STOCK SCANNER (196 QUALITY STOCKS) -->
     <aside class="scanner-sidebar">
       <div class="sidebar-top">
         <div class="sidebar-title-row">
           <div>
             <h2>Aktien-Universum</h2>
-            <span class="sub-counter" id="universeCountLabel">Lade 51 Qualitätsaktien...</span>
+            <span class="sub-counter" id="universeCountLabel">Lade 196 Qualitätsaktien...</span>
           </div>
           <div class="add-ticker-box">
-            <input type="text" id="inputAddSymbol" placeholder="+ Ticker (z.B. TSLA)" />
-            <button id="btnAddSymbol" title="Ticker hinzufügen">+</button>
+            <input type="text" id="inputAddSymbol" placeholder="+ Symbol (z.B. PLTR)" />
+            <button id="btnAddSymbol" title="Ticker zur Watchlist hinzufügen">+</button>
           </div>
         </div>
 
         <!-- PHASE FILTER PILLS -->
         <div class="filter-pills" id="phaseFilterTabs">
           <button class="filter-pill active" data-filter="all">Alle <span id="cntAll"></span></button>
-          <button class="filter-pill pill-p4" data-filter="phase4">🚨 P4 Entry <span id="cntP4"></span></button>
-          <button class="filter-pill pill-p3" data-filter="phase3">⚡ P3 Boden <span id="cntP3"></span></button>
-          <button class="filter-pill pill-p2" data-filter="phase2">👁️ P2 LoD <span id="cntP2"></span></button>
+          <button class="filter-pill pill-p4" data-filter="phase4">🚨 P4 <span id="cntP4"></span></button>
+          <button class="filter-pill pill-p3" data-filter="phase3">⚡ P3 <span id="cntP3"></span></button>
+          <button class="filter-pill pill-p2" data-filter="phase2">👁️ P2 <span id="cntP2"></span></button>
           <button class="filter-pill" data-filter="dips">📉 Dips <span id="cntDips"></span></button>
         </div>
 
-        <!-- REGION / INDEX FILTER & SEARCH -->
-        <div class="search-and-region">
-          <input type="text" id="inputSearchStock" placeholder="🔍 Name, Symbol, Index oder Sektor suchen..." />
-          <div class="region-chips" id="regionFilterTabs">
-            <button class="reg-chip active" data-region="ALL">Alle Märkte</button>
-            <button class="reg-chip" data-region="DAX">DAX / MDAX</button>
-            <button class="reg-chip" data-region="ATX">ATX / SMI / EU</button>
-            <button class="reg-chip" data-region="US">US (S&amp;P / Nasdaq)</button>
-          </div>
+        <!-- INDEX CHIPS (ALL 7 INDICES) -->
+        <div class="index-chips-grid" id="regionFilterTabs">
+          <button class="reg-chip active" data-region="ALL">Alle Märkte</button>
+          <button class="reg-chip" data-region="DAX">DAX 40</button>
+          <button class="reg-chip" data-region="MDAX">MDAX</button>
+          <button class="reg-chip" data-region="ATX">ATX Wien</button>
+          <button class="reg-chip" data-region="EUROSTOXX">EuroStoxx</button>
+          <button class="reg-chip" data-region="SMI">SMI Schweiz</button>
+          <button class="reg-chip" data-region="NASDAQ100">Nasdaq 100</button>
+          <button class="reg-chip" data-region="SP500">S&amp;P 500</button>
+        </div>
+
+        <!-- SEARCH & SORT ROW -->
+        <div class="search-and-sort-row">
+          <input type="text" id="inputSearchStock" placeholder="🔍 Aktie, Symbol oder Sektor..." />
+          <select id="selectSortStocks" title="Sortierung">
+            <option value="phase">🔥 Setup-Phase</option>
+            <option value="intraday">📉 Tages-Dip %</option>
+            <option value="swing">📊 20T-Hoch Dip %</option>
+            <option value="pe">💎 KGV günstig</option>
+            <option value="name">🔤 Name A–Z</option>
+          </select>
         </div>
       </div>
 
@@ -172,8 +185,19 @@
       </div>
     </aside>
 
-    <!-- MAIN STAGE: HERO HEADER + 4-PHASE PIPELINE + TRADINGVIEW LIGHTWEIGHT CHART + BOTTOM DECK -->
+    <!-- MAIN STAGE: TOP RADAR STRIP + HERO HEADER + 4-PHASE PIPELINE + TRADINGVIEW LIGHTWEIGHT CHART + BOTTOM DECK -->
     <main class="main-stage">
+      <!-- TOP SETUP RADAR STRIP (6 HOTTEST MEAN-REVERSION CANDIDATES ACROSS 196 STOCKS) -->
+      <section class="radar-strip-section">
+        <div class="radar-strip-header">
+          <span class="radar-title">🎯 TOP MEAN-REVERSION RADAR (AKTIVE SETUPS &amp; STÄRKSTE ÜBERREAKTIONEN AUS 196 AKTIEN)</span>
+          <span class="radar-hint">Klicke auf eine Karte für sofortigen M10-Chart &amp; 5%-Positionsrechner</span>
+        </div>
+        <div class="radar-cards-grid" id="topRadarGrid">
+          <!-- Dynamisch gefüllt mit den Top 6 Kandidaten -->
+        </div>
+      </section>
+
       <!-- STOCK HERO HEADER -->
       <section class="stock-hero-card">
         <div class="hero-left">
@@ -181,6 +205,7 @@
             <span class="sym-badge" id="detailStockSymbol">SY1.DE</span>
             <span class="idx-badge" id="detailStockIndex">DAX 40 · Chemie</span>
             <span class="mkt-badge" id="detailMarketHours">Prüfe Handelszeit...</span>
+            <span class="pe-badge" id="detailPeBadge">KGV --</span>
           </div>
           <h2 id="detailStockName" class="hero-stock-name">Symrise AG</h2>
           <div class="hero-fundamentals" id="detailFundamentalSummary">
@@ -193,7 +218,7 @@
             <div class="hero-price" id="detailCurrentPrice">--,-- €</div>
             <div class="hero-deltas">
               <span class="delta-pill" id="detailIntradayChange">0.00% heute</span>
-              <span class="delta-pill neutral" id="detailSwingDip">0.0% v. Hoch</span>
+              <span class="delta-pill neutral" id="detailSwingDip">0.0% v. 20T-Hoch</span>
             </div>
           </div>
 
@@ -277,7 +302,7 @@
           </div>
           <div class="chart-actions">
             <button class="btn btn-xs btn-secondary" id="btnFitChart" title="Chart-Ansicht zentrieren">⤢ Zoom Reset</button>
-            <button class="btn btn-xs btn-secondary" id="btnRefreshChart">↻ M10-Daten neu laden</button>
+            <button class="btn btn-xs btn-secondary" id="btnRefreshChart">↻ M10 neu laden</button>
           </div>
         </div>
 
@@ -451,7 +476,7 @@
           <div class="tg-modal-top">
             <div>
               <h3>📲 Telegram-Bot: @PureSiteTrading_bot</h3>
-              <p>Dein API-Key ist bereits hinterlegt. Öffne einmal den Bot in Telegram und klicke auf „Starten“, damit der Server deine persönliche Chat-ID erkennt.</p>
+              <p>Dein API-Key und deine Chat-ID (9065309684) sind aktiv gekoppelt. Alle Alarme werden gleichzeitig an das Web-Dashboard und an deinen Telegram-Chat gesendet.</p>
             </div>
             <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" rel="noopener" class="btn btn-tg-link">
               ↗ @PureSiteTrading_bot öffnen
@@ -466,7 +491,7 @@
             <div class="inp-field">
               <label>Deine Telegram Chat-ID</label>
               <div style="display:flex;gap:6px;">
-                <input type="text" id="setTelegramChatId" placeholder="Klicke auf Chat-ID erkennen →" style="flex:1" />
+                <input type="text" id="setTelegramChatId" value="9065309684" placeholder="Chat-ID" style="flex:1" />
                 <button class="btn btn-secondary btn-sm" id="btnDetectChatId">🔍 Erkennen</button>
               </div>
             </div>
