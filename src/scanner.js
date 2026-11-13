@@ -244,20 +244,29 @@ export class StrategyScanner {
 
       const livePrices = {};
       const targetSymbols = Array.from(liveSymbolSet).slice(0, 15);
+      const shouldFetch = targetSymbols.length > 0 && (openTrades.length > 0 || this.notifier.wsClients.size > 0);
 
-      if (targetSymbols.length > 0 && this.notifier.wsClients.size > 0) {
+      if (shouldFetch) {
         try {
-          const quoteMap = await this.marketData.fetchBatchQuotes(targetSymbols, { timeoutMs: 850 });
+          const fetchList = Array.from(new Set(['EURUSD=X', 'EURCHF=X', ...targetSymbols]));
+          const quoteMap = await this.marketData.fetchBatchQuotes(fetchList, { timeoutMs: 850 });
+
+          const eurUsd = quoteMap.get('EURUSD=X');
+          const eurChf = quoteMap.get('EURCHF=X');
+          if (eurUsd?.regularMarketPrice > 0.5) this.fxToEur.USD = 1 / eurUsd.regularMarketPrice;
+          if (eurChf?.regularMarketPrice > 0.5) this.fxToEur.CHF = 1 / eurChf.regularMarketPrice;
+
           for (const sym of targetSymbols) {
             const rawQ = quoteMap.get(sym);
             const rec = this.stockResults.get(sym);
             if (!rawQ || !rec || rec.isSimulation) continue;
 
             const fx = this.getFxRateToEur(rec.nativeCurrency || rawQ.currency || 'EUR');
-            const qEur = this.convertQuoteToEur(rawQ, fx);
-            const newPrice = Number(qEur.regularMarketPrice || 0);
-            if (newPrice > 0) {
-              rec.price = Math.round(newPrice * 100) / 100;
+            const rawPrice = Number(rawQ.regularMarketPrice || 0);
+            if (rawPrice > 0) {
+              const exactEur = Math.round(rawPrice * fx * 10000) / 10000;
+              rec.exactPriceEur = exactEur;
+              rec.price = Math.round(exactEur * 100) / 100;
               rec.intradayChangePct = Math.round(Number(rawQ.regularMarketChangePercent ?? rec.intradayChangePct ?? 0) * 100) / 100;
               if (rec.analysis) rec.analysis.currentPrice = rec.price;
               rec.updatedAt = new Date().toISOString();
@@ -266,13 +275,14 @@ export class StrategyScanner {
               let lastBar = null;
               if (Array.isArray(bars) && bars.length > 0) {
                 lastBar = bars[bars.length - 1];
-                lastBar.close = rec.price;
-                if (rec.price > lastBar.high) lastBar.high = rec.price;
-                if (rec.price < lastBar.low) lastBar.low = rec.price;
+                lastBar.close = exactEur;
+                if (exactEur > lastBar.high) lastBar.high = exactEur;
+                if (exactEur < lastBar.low) lastBar.low = exactEur;
               }
 
               livePrices[sym] = {
                 price: rec.price,
+                exactPriceEur: exactEur,
                 intradayChangePct: rec.intradayChangePct,
                 lastBar
               };
@@ -412,8 +422,14 @@ export class StrategyScanner {
         snapshot: this.getSnapshot()
       });
 
-      // 4. Sortieren nach Dip-Relevanz (größte Tagesverlierer + noch nicht geladene M10-Charts zuerst)
+      // 4. Sortieren nach Dip-Relevanz (geöffnete Heimatbörsen + größte Tagesverlierer + noch nicht geladene M10-Charts zuerst)
       const rankedUniverse = [...universe].sort((a, b) => {
+        const idxA = BENCHMARK_INDICES[a.index] || BENCHMARK_INDICES.DAX;
+        const idxB = BENCHMARK_INDICES[b.index] || BENCHMARK_INDICES.DAX;
+        const openA = checkReferenceMarketOpen(idxA.region).isOpen ? 0 : 1;
+        const openB = checkReferenceMarketOpen(idxB.region).isOpen ? 0 : 1;
+        if (openA !== openB) return openA - openB;
+
         const hasA = this.m10Store.has(a.symbol) ? 1 : 0;
         const hasB = this.m10Store.has(b.symbol) ? 1 : 0;
         const qa = quoteMap.get(a.symbol);
@@ -427,8 +443,8 @@ export class StrategyScanner {
         return chgA - chgB;
       });
 
-      // Pro Scan-Zyklus die 60 wichtigsten Dips/Kandidaten tiefenscannen
-      const deepScanTargets = rankedUniverse.slice(0, 60);
+      // Pro Scan-Zyklus die 80 wichtigsten Dips/Kandidaten tiefenscannen
+      const deepScanTargets = rankedUniverse.slice(0, 80);
       const batchSize = 4;
       for (let i = 0; i < deepScanTargets.length; i += batchSize) {
         const slice = deepScanTargets.slice(i, i + batchSize);
@@ -487,6 +503,13 @@ export class StrategyScanner {
           }));
           const rawM10 = resampleToM10(eur5mBars, tz);
           m10Bars = enrichM10Indicators(rawM10);
+          const liveQuotePrice = Number(quote?.regularMarketPrice || 0);
+          if (liveQuotePrice > 0 && m10Bars.length > 0) {
+            const lastBar = m10Bars[m10Bars.length - 1];
+            lastBar.close = liveQuotePrice;
+            if (liveQuotePrice > lastBar.high) lastBar.high = liveQuotePrice;
+            if (liveQuotePrice < lastBar.low) lastBar.low = liveQuotePrice;
+          }
           this.m10Store.set(stockMeta.symbol, m10Bars);
 
           const m = this.convertQuoteToEur(intradayData.meta || {}, fx);
@@ -506,11 +529,20 @@ export class StrategyScanner {
         } catch {
           // Nutze Batch-Quote + gecachte M10-Kerzen
         }
+      } else if (m10Bars.length > 0 && quote?.regularMarketPrice > 0) {
+        const lastBar = m10Bars[m10Bars.length - 1];
+        const liveQuotePrice = Number(quote.regularMarketPrice);
+        lastBar.close = liveQuotePrice;
+        if (liveQuotePrice > lastBar.high) lastBar.high = liveQuotePrice;
+        if (liveQuotePrice < lastBar.low) lastBar.low = liveQuotePrice;
       }
 
       const currentPrice =
         quote?.regularMarketPrice ||
         (m10Bars.length > 0 ? m10Bars[m10Bars.length - 1].close : 0);
+      const exactPriceEur = rawQuote?.regularMarketPrice > 0
+        ? Math.round(Number(rawQuote.regularMarketPrice) * fx * 10000) / 10000
+        : currentPrice;
 
       const fundamentals = evaluateFundamentalAndFilters(
         stockMeta,
@@ -558,6 +590,7 @@ export class StrategyScanner {
         nativeCurrency: stockMeta.currency || 'EUR',
         currency: '€',
         price: Math.round((analysis.currentPrice || currentPrice || 0) * 100) / 100,
+        exactPriceEur,
         intradayChangePct: fundamentals.intradayChangePct,
         dipFromSwingHighPct: fundamentals.dipFromSwingHighPct,
         fundamentals,
@@ -571,10 +604,12 @@ export class StrategyScanner {
 
       this.stockResults.set(stockMeta.symbol, fullRecord);
 
-      // WICHTIG: Benachrichtigung & automatischer Demo-Account-Trade NUR bei echtem Kauf-Lead (Phase 4 Entry)!
+      // WICHTIG: Benachrichtigung & automatischer Demo-Account-Trade NUR bei echtem Kauf-Lead (Phase 4 Entry) bei geöffneter Börse!
       const lastSession = m10Bars.length > 0 ? m10Bars[m10Bars.length - 1].sessionDate : 'today';
       if (
         analysis.phase === 4 &&
+        marketClock.isOpen &&
+        !marketClock.isNearClose &&
         this.notifier.shouldTriggerPhaseAlert(stockMeta.symbol, 4, lastSession)
       ) {
         let openedDemoTrade = null;
@@ -591,7 +626,7 @@ export class StrategyScanner {
             name: stockMeta.name,
             currency: '€',
             isDemoAuto: true,
-            entryPrice: fullRecord.price,
+            entryPrice: fullRecord.exactPriceEur || fullRecord.price,
             lodPrice: analysis.lodPrice,
             stopLossStock: sizing.stopLossStock,
             leverage: sizing.activeLeverage,
@@ -644,7 +679,7 @@ export class StrategyScanner {
   /**
    * Überwacht alle offenen Leads/Trades des Demo-Accounts:
    * - Bei Stufe 2 (>= 1.5R) wird der Stop-Loss im Demo-Account automatisch auf Break-Even (+0,1%) nachgezogen (lautlos ohne Spam).
-   * - Sobald das Close-Signal (Stagnations-Exit, Stop-Loss oder EOD) erreicht wird, verkauft der Demo-Account automatisch,
+   * - Sobald das Close-Signal (Stagnations-Exit, Stop-Loss oder EOD/Börsenschluss) erreicht wird, verkauft der Demo-Account automatisch,
    *   bucht Gewinn/Verlust in € auf das Demo-Konto und sendet sofort die Close-Benachrichtigung (Web + Telegram)!
    */
   async evaluateAllActiveTrades() {
@@ -673,7 +708,20 @@ export class StrategyScanner {
       }
 
       const stockRecord = this.stockResults.get(trade.symbol);
-      const evaluation = evaluateActiveTrade(trade, m10Bars, stockRecord?.marketClock || {});
+      const stockMeta = DEFAULT_UNIVERSE.find((u) => u.symbol === trade.symbol);
+      const idxInfo = BENCHMARK_INDICES[stockRecord?.index || stockMeta?.index] || BENCHMARK_INDICES.DAX;
+      const liveClock = checkReferenceMarketOpen(stockRecord?.region || idxInfo.region);
+
+      // Synchronisiere die letzte M10-Kerze mit dem exakten Live-Sekundenkurs in €
+      const liveExact = Number(stockRecord?.exactPriceEur || stockRecord?.price || 0);
+      if (liveExact > 0 && m10Bars.length > 0 && !stockRecord?.isSimulation) {
+        const lastBar = m10Bars[m10Bars.length - 1];
+        lastBar.close = liveExact;
+        if (liveExact > lastBar.high) lastBar.high = liveExact;
+        if (liveExact < lastBar.low) lastBar.low = liveExact;
+      }
+
+      const evaluation = evaluateActiveTrade(trade, m10Bars, liveClock);
       if (!evaluation) continue;
 
       trade.latestEvaluation = evaluation;
@@ -685,17 +733,21 @@ export class StrategyScanner {
         trade.breakEvenActive = true;
       }
 
-      // Prüfe, ob der Lead geschlossen werden soll (Take-Profit / Stagnation, Stop-Loss oder EOD)
+      // Prüfe, ob der Lead geschlossen werden soll (Take-Profit / Stagnation, Stop-Loss oder EOD/Börsenschluss)
       const isStopHit = evaluation.alertType === 'STOP_LOSS_HIT';
       const isStagnationExit = evaluation.alertType === 'STAGNATION_EXIT';
-      const isEodClose = Boolean(stockRecord?.marketClock?.isNearClose && evaluation.stockGainPct !== 0);
+      const isEodClose = Boolean(
+        trade.isDemoAuto &&
+        !stockRecord?.isSimulation &&
+        (liveClock.isNearClose || !liveClock.isOpen)
+      );
 
       if (isStopHit || isStagnationExit || isEodClose) {
         const exitReason = isStopHit
           ? 'Stop-Loss unter Tagestief ausgelöst (Kap. 05)'
           : isStagnationExit
             ? 'Stagnations-Exit / Take-Profit am Widerstand (Kap. 06)'
-            : 'EOD Time-Stop vor Börsenschluss (Kap. 6.2)';
+            : 'Börsenschluss / EOD Time-Stop (Kap. 6.2)';
 
         // Im Demo-Account automatisch glattstellen und Gewinn/Verlust realisieren!
         const closedJournal = this.closeActiveTrade(trade.id, evaluation.currentPrice, exitReason);
@@ -716,8 +768,8 @@ export class StrategyScanner {
           demoAccount: this.getDemoMetrics(),
           title: isStopHit
             ? `🛑 LEAD GECLOSED (STOP-LOSS): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`
-            : `🏁 LEAD GECLOSED (TAKE-PROFIT): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
-          message: `${evaluation.recommendation} — Demo-Account Kontostand: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
+            : `🏁 LEAD GECLOSED (${isEodClose ? 'BÖRSENSCHLUSS' : 'TAKE-PROFIT'}): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
+          message: `${exitReason} — Demo-Account Kontostand: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
         });
       }
     }
@@ -937,7 +989,7 @@ export class StrategyScanner {
       const posEuro = Number(t.positionSizeEuro || 0);
       investedEuro += posEuro;
       const rec = this.stockResults.get(t.symbol);
-      const curPrice = Number(t.latestEvaluation?.currentPrice || rec?.price || t.entryPrice);
+      const curPrice = Number(rec?.exactPriceEur || rec?.price || t.latestEvaluation?.currentPrice || t.entryPrice);
       const stockGainPct = t.entryPrice > 0 ? ((curPrice - t.entryPrice) / t.entryPrice) * 100 : 0;
       const derivGainPct = stockGainPct * Number(t.leverage || 8);
       const openPnl = posEuro * (derivGainPct / 100);
@@ -1024,7 +1076,7 @@ export class StrategyScanner {
   openActiveTrade(payload) {
     const symbol = String(payload.symbol || '').toUpperCase();
     const record = this.stockResults.get(symbol);
-    const entryPrice = Number(payload.entryPrice || record?.price || 100);
+    const entryPrice = Number(payload.entryPrice || record?.exactPriceEur || record?.price || 100);
     const lodPrice = Number(payload.lodPrice || record?.analysis?.lodPrice || entryPrice * 0.985);
     const stopLossStock = Number(payload.stopLossStock || record?.sizing?.stopLossStock || lodPrice * 0.998);
     const leverage = Number(payload.leverage || record?.sizing?.activeLeverage || 8);
@@ -1032,15 +1084,19 @@ export class StrategyScanner {
     const demo = this.state.demoAccount;
     const desiredSize = Number(payload.positionSizeEuro || record?.sizing?.positionSizeEuro || 2500);
     const availableCash = Math.max(0, Number(demo.cashEuro ?? 10000));
+    const equityBefore = this.getDemoMetrics().totalEquityEuro || Number(demo.initialBalanceEuro || 10000);
+    // Diversifikation: max. 25 % des Demo-Gesamtkapitals pro Auto-Lead, damit bis zu 4–5 Leads parallel laufen können
+    const maxSingleAutoAlloc = Math.max(250, Math.round(equityBefore * 0.25 * 100) / 100);
 
     // Wenn kein Cash mehr frei ist (unter 250 €), kann kein neuer Auto-Trade eröffnet werden
     if (availableCash < 250 && payload.isDemoAuto) {
       return null;
     }
 
+    const cappedDesired = payload.isDemoAuto ? Math.min(desiredSize, maxSingleAutoAlloc) : desiredSize;
     const positionSizeEuro = availableCash >= 250
-      ? Math.round(Math.min(desiredSize, availableCash) * 100) / 100
-      : Math.round(desiredSize * 100) / 100;
+      ? Math.round(Math.min(cappedDesired, availableCash) * 100) / 100
+      : Math.round(cappedDesired * 100) / 100;
 
     // Ziehe Kaufbetrag vom verfügbaren Demo-Cash ab
     demo.cashEuro = Math.max(0, Math.round((availableCash - positionSizeEuro) * 100) / 100);
@@ -1054,7 +1110,7 @@ export class StrategyScanner {
       name: payload.name || record?.name || symbol,
       currency: '€',
       isDemoAuto: Boolean(payload.isDemoAuto ?? true),
-      entryPrice: Math.round(entryPrice * 100) / 100,
+      entryPrice: Math.round(entryPrice * 10000) / 10000,
       lodPrice: Math.round(lodPrice * 100) / 100,
       stopLossStock: Math.round(stopLossStock * 100) / 100,
       leverage,

@@ -73,9 +73,9 @@ export class MarketDataService {
           const host = this.getNextHost();
           const url = `${host}/v7/finance/quote?symbols=${encodeURIComponent(
             chunk.join(',')
-          )}&crumb=${encodeURIComponent(crumb)}`;
+          )}&crumb=${encodeURIComponent(crumb)}&_=${Date.now()}`;
           const res = await fetch(url, {
-            headers: { 'User-Agent': USER_AGENT, Cookie: cookieStr },
+            headers: { 'User-Agent': USER_AGENT, Cookie: cookieStr, 'Cache-Control': 'no-cache' },
             signal: AbortSignal.timeout(timeoutMs)
           });
           if (res.ok) {
