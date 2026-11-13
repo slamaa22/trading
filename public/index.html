@@ -14,9 +14,11 @@
   <!-- MINIMAL TRADE REPUBLIC TOPBAR -->
   <header class="tr-topbar">
     <div class="tr-brand">
-      <div class="tr-logo">TR</div>
+      <div class="tr-logo">
+        <svg class="tr-ico tr-ico-logo" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+      </div>
       <div class="tr-brand-meta">
-        <span class="tr-brand-name">Trade Republic Stil · M10 Auto-Trader</span>
+        <span class="tr-brand-name">M10 Auto-Trader</span>
         <span class="tr-live-status">
           <i class="status-dot" id="wsStatusDot"></i>
           <span id="scanStatusText">Live (€)</span>
@@ -36,12 +38,16 @@
 
       <!-- Compact Telegram Status -->
       <a href="https://t.me/PureSiteTrading_bot" target="_blank" rel="noopener" class="tr-tg-pill connected" id="tgConnectBar" title="Telegram-Bot @PureSiteTrading_bot">
-        <span class="tg-dot connected" id="tgStatusDot"></span>
+        <svg class="tr-ico" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
         <span id="tgBotTitle">Telegram aktiv</span>
       </a>
 
-      <button class="tr-icon-btn" id="btnScanNow" title="Alle 196 Aktien jetzt aktualisieren">↻</button>
-      <button class="tr-icon-btn" id="btnOpenSettings" title="Einstellungen, Simulation &amp; Konto-Reset">⚙️</button>
+      <button class="tr-icon-btn" id="btnScanNow" title="Alle 196 Aktien jetzt aktualisieren">
+        <svg class="tr-ico" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+      </button>
+      <button class="tr-icon-btn" id="btnOpenSettings" title="Einstellungen, Simulation &amp; Konto-Reset">
+        <svg class="tr-ico" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
     </div>
   </header>
 
@@ -57,7 +63,9 @@
     <div class="tr-toast-actions">
       <span id="bannerDelivery" class="tr-toast-meta">Web + Telegram</span>
       <button class="tr-btn tr-btn-primary tr-btn-sm" id="btnBannerView">Ansehen</button>
-      <button class="tr-btn-close" id="btnBannerClose">✕</button>
+      <button class="tr-btn-close" id="btnBannerClose" aria-label="Schließen">
+        <svg class="tr-ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
     </div>
   </div>
 
@@ -74,8 +82,9 @@
             <div class="tr-return-row" id="demoTotalReturn">+0,00 € (+0,00 %) gesamt</div>
           </div>
           <div class="tr-portfolio-actions">
-            <button class="tr-chip-btn" id="btnResetDemoAccount" title="Demo-Konto auf 10.000 € zurücksetzen">
-              Reset 10.000 €
+            <button class="tr-chip-btn tr-btn-icon-text" id="btnResetDemoAccount" title="Demo-Konto auf 10.000 € zurücksetzen">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              <span>Reset 10.000 €</span>
             </button>
           </div>
         </div>
@@ -106,13 +115,19 @@
       <div class="tr-card tr-positions-card" id="wbCardTradesAndAlerts">
         <div class="tr-tabs">
           <button class="tr-tab active" data-wbtab="trades">
-            Investments <span class="tr-count" id="activeTradesCount">0</span>
+            <svg class="tr-ico" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="7" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+            <span>Investments</span>
+            <span class="tr-count" id="activeTradesCount">0</span>
           </button>
           <button class="tr-tab" data-wbtab="journal">
-            Historie &amp; Orders <span class="tr-count" id="closedTradesBadge">0</span>
+            <svg class="tr-ico" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M12 7v5l3 3"/></svg>
+            <span>Historie &amp; Orders</span>
+            <span class="tr-count" id="closedTradesBadge">0</span>
           </button>
           <button class="tr-tab" data-wbtab="alerts">
-            Signale <span class="tr-count" id="alertsCount">0</span>
+            <svg class="tr-ico" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            <span>Signale</span>
+            <span class="tr-count" id="alertsCount">0</span>
           </button>
         </div>
 
@@ -177,8 +192,13 @@
               <span id="chartHoverInfo" class="tr-hover-ohlc"></span>
             </div>
             <div class="tr-chart-btns">
-              <button class="tr-chip-btn" id="btnFitChart">Zoom Reset</button>
-              <button class="tr-chip-btn" id="btnRefreshChart">↻</button>
+              <button class="tr-chip-btn tr-btn-icon-text" id="btnFitChart" title="Chart zentrieren">
+                <svg class="tr-ico" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/></svg>
+                <span>Zoom</span>
+              </button>
+              <button class="tr-chip-btn tr-btn-icon-only" id="btnRefreshChart" title="Chart neu laden">
+                <svg class="tr-ico" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+              </button>
             </div>
           </div>
           <div id="tvMainChart" class="tr-main-chart"></div>
@@ -205,8 +225,9 @@
               <strong id="confluenceScoreBadge">0/4</strong>
             </div>
           </div>
-          <button class="tr-btn tr-btn-buy" id="btnOpenTradeFromCalc">
-            Jetzt im Demo-Depot kaufen
+          <button class="tr-btn tr-btn-buy tr-btn-icon-text" id="btnOpenTradeFromCalc">
+            <svg class="tr-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
+            <span>Jetzt im Demo-Depot kaufen</span>
           </button>
         </div>
 
@@ -244,7 +265,10 @@
       <!-- TOP LEADS / MOVERS -->
       <div class="tr-card tr-radar-card">
         <div class="tr-section-header">
-          <h3>🔥 Top Signale &amp; Dips</h3>
+          <h3 class="tr-heading-icon">
+            <svg class="tr-ico" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            <span>Top Signale &amp; Dips</span>
+          </h3>
           <span class="tr-sub-text" id="universeCountLabel">196 Aktien (€)</span>
         </div>
         <div class="tr-radar-list" id="topRadarGrid"></div>
@@ -254,7 +278,10 @@
       <div class="tr-card tr-watchlist-card">
         <div class="tr-watchlist-controls">
           <div class="tr-search-row">
-            <input type="text" id="inputSearchStock" placeholder="Suchen (Name, Symbol, Sektor)..." />
+            <div class="tr-search-input-wrap">
+              <svg class="tr-ico tr-search-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input type="text" id="inputSearchStock" placeholder="Suchen (Name, Symbol, Sektor)..." />
+            </div>
             <select id="selectSortStocks" title="Sortierung">
               <option value="phase">Signale zuerst</option>
               <option value="intraday">Stärkster Dip heute</option>
@@ -264,11 +291,25 @@
           </div>
 
           <div class="tr-filter-row" id="phaseFilterTabs">
-            <button class="tr-filter-chip active" data-filter="all">Alle <span id="cntAll"></span></button>
-            <button class="tr-filter-chip" data-filter="phase4">🟢 Leads <span id="cntP4"></span></button>
-            <button class="tr-filter-chip" data-filter="phase3">⚡ Boden <span id="cntP3"></span></button>
-            <button class="tr-filter-chip" data-filter="phase2">👁️ LoD <span id="cntP2"></span></button>
-            <button class="tr-filter-chip" data-filter="dips">📉 Dips <span id="cntDips"></span></button>
+            <button class="tr-filter-chip active" data-filter="all">
+              <span>Alle</span> <span id="cntAll"></span>
+            </button>
+            <button class="tr-filter-chip" data-filter="phase4">
+              <span class="tr-dot-ind p4"></span>
+              <span>Leads</span> <span id="cntP4"></span>
+            </button>
+            <button class="tr-filter-chip" data-filter="phase3">
+              <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              <span>Boden</span> <span id="cntP3"></span>
+            </button>
+            <button class="tr-filter-chip" data-filter="phase2">
+              <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span>LoD</span> <span id="cntP2"></span>
+            </button>
+            <button class="tr-filter-chip" data-filter="dips">
+              <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
+              <span>Dips</span> <span id="cntDips"></span>
+            </button>
           </div>
 
           <div class="tr-region-row" id="regionFilterTabs">
@@ -293,7 +334,9 @@
     <div class="modal-dialog">
       <div class="modal-header">
         <h2>Einstellungen &amp; Werkzeuge</h2>
-        <button class="tr-btn-close" id="btnCloseSettings">✕</button>
+        <button class="tr-btn-close" id="btnCloseSettings" aria-label="Schließen">
+          <svg class="tr-ico" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
 
       <div class="modal-body">
@@ -305,8 +348,14 @@
               <p class="tr-sub-text" id="tgBotSub">Sendet Kaufsignale (Leads) &amp; Verkäufe sofort aufs Handy.</p>
             </div>
             <div style="display:flex;gap:6px;">
-              <a href="https://t.me/PureSiteTrading_bot" target="_blank" rel="noopener" class="tr-chip-btn" id="btnOpenTelegramBot">Bot öffnen</a>
-              <button class="tr-chip-btn" id="btnQuickTestAlert">Test-Push</button>
+              <a href="https://t.me/PureSiteTrading_bot" target="_blank" rel="noopener" class="tr-chip-btn tr-btn-icon-text" id="btnOpenTelegramBot">
+                <svg class="tr-ico" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+                <span>Bot öffnen</span>
+              </a>
+              <button class="tr-chip-btn tr-btn-icon-text" id="btnQuickTestAlert">
+                <svg class="tr-ico" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+                <span>Test-Push</span>
+              </button>
             </div>
           </div>
 
@@ -369,12 +418,21 @@
         <div class="tr-modal-section">
           <strong>Demo-Simulation &amp; Eigene Aktie hinzufügen</strong>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;" id="simMenu">
-            <button class="tr-chip-btn" data-sim="phase4_entry">🟢 Demo-Kaufsignal (Phase 4) testen</button>
-            <button class="tr-chip-btn" data-sim="stagnation_exit">🏁 Demo-Take-Profit (Exit) testen</button>
+            <button class="tr-chip-btn tr-btn-icon-text" data-sim="phase4_entry">
+              <span class="tr-dot-ind p4"></span>
+              <span>Demo-Kaufsignal (Phase 4) testen</span>
+            </button>
+            <button class="tr-chip-btn tr-btn-icon-text" data-sim="stagnation_exit">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></svg>
+              <span>Demo-Take-Profit (Exit) testen</span>
+            </button>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;">
             <input type="text" id="inputAddSymbol" placeholder="Eigenes Ticker-Symbol hinzufügen (z.B. PLTR)" style="flex:1" />
-            <button class="tr-chip-btn" id="btnAddSymbol">+ Hinzufügen</button>
+            <button class="tr-chip-btn tr-btn-icon-text" id="btnAddSymbol">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              <span>Hinzufügen</span>
+            </button>
           </div>
         </div>
       </div>

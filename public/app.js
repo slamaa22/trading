@@ -312,15 +312,16 @@ function updateTradingViewChartData() {
 function bindUIEvents() {
   document.getElementById('btnScanNow').addEventListener('click', async () => {
     const btn = document.getElementById('btnScanNow');
+    const svg = btn.querySelector('svg');
     btn.disabled = true;
-    btn.textContent = '⏳';
+    svg?.classList.add('tr-ico-spin');
     try {
       const res = await fetch('/api/scan', { method: 'POST' });
       const snap = await res.json();
       applySnapshot(snap);
     } finally {
       btn.disabled = false;
-      btn.textContent = '↻';
+      svg?.classList.remove('tr-ico-spin');
     }
   });
 
@@ -848,7 +849,15 @@ function renderTopRadarStrip() {
       const chgColor = chg >= 0 ? '#00d09c' : '#ff4d4f';
       const isSel = s.symbol === state.selectedSymbol;
       const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
-      const shortBadge = p === 4 ? '🟢 LEAD' : p === 3 ? '⚡ BODEN' : p === 2 ? '👁️ LOD' : p === 1 ? 'FALL' : '';
+      const shortBadge = p === 4
+        ? `${iconSvg('dot-p4')} LEAD`
+        : p === 3
+          ? `${iconSvg('bolt')} BODEN`
+          : p === 2
+            ? `${iconSvg('eye')} LOD`
+            : p === 1
+              ? 'FALL'
+              : '';
 
       return `<div class="radar-card ${isSel ? 'active' : ''} ${p === 4 ? 'lead-p4' : ''}" data-radar-sym="${escapeHtml(s.symbol)}">
         <div class="rc-row1">
@@ -940,7 +949,15 @@ function renderStockList() {
       const p = s.analysis?.phase ?? 0;
       const isSelected = s.symbol === state.selectedSymbol;
       const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
-      const badgeLabel = p === 4 ? '🟢 LEAD' : p === 3 ? '⚡ BODEN' : p === 2 ? '👁️ LOD' : p === 1 ? 'FALL' : '';
+      const badgeLabel = p === 4
+        ? `${iconSvg('dot-p4')} LEAD`
+        : p === 3
+          ? `${iconSvg('bolt')} BODEN`
+          : p === 2
+            ? `${iconSvg('eye')} LOD`
+            : p === 1
+              ? 'FALL'
+              : '';
       const cardPhase = p >= 2 ? `phase-${p}` : '';
       const chg = Number(s.intradayChangePct || 0);
       const chgCls = chg >= 0 ? 'pos' : 'neg';
@@ -1019,7 +1036,7 @@ function renderSelectedStockDetails(rec) {
 
   const phaseBadgeEl = document.getElementById('detailPhaseBadge');
   if (phaseBadgeEl) {
-    phaseBadgeEl.textContent = a.phaseBadge || 'NEUTRAL';
+    phaseBadgeEl.textContent = stripEmojis(a.phaseBadge || 'NEUTRAL');
     phaseBadgeEl.className = `tr-phase-pill p${phase >= 1 ? phase : 0}`;
   }
 
@@ -1282,12 +1299,12 @@ function handleIncomingLiveAlert(alert) {
   }
 
   const banner = document.getElementById('liveAlertBanner');
-  document.getElementById('bannerBadge').textContent = alert.phaseBadge || `PHASE ${alert.phase || 4}`;
-  document.getElementById('bannerTitle').textContent = alert.title;
-  document.getElementById('bannerSub').textContent = alert.message;
-  document.getElementById('bannerDelivery').textContent = alert.delivery?.telegram?.ok
-    ? '✅ Web + @PureSiteTrading_bot gleichzeitig zugestellt'
-    : '🔔 Web-Dashboard Live-Alarm';
+  document.getElementById('bannerBadge').textContent = stripEmojis(alert.phaseBadge || `PHASE ${alert.phase || 4}`);
+  document.getElementById('bannerTitle').textContent = stripEmojis(alert.title);
+  document.getElementById('bannerSub').textContent = stripEmojis(alert.message);
+  document.getElementById('bannerDelivery').innerHTML = alert.delivery?.telegram?.ok
+    ? `${iconSvg('check')} Web + @PureSiteTrading_bot`
+    : `${iconSvg('bell')} Web Live-Alarm`;
 
   document.getElementById('btnBannerView').onclick = () => {
     if (alert.symbol) {
@@ -1304,10 +1321,10 @@ function handleIncomingLiveAlert(alert) {
 
   if (settings.browserNotificationsEnabled !== false && 'Notification' in window) {
     if (Notification.permission === 'granted') {
-      new Notification(alert.title, { body: alert.message });
+      new Notification(stripEmojis(alert.title), { body: stripEmojis(alert.message) });
     } else if (Notification.permission !== 'denied') {
       Notification.requestPermission().then((perm) => {
-        if (perm === 'granted') new Notification(alert.title, { body: alert.message });
+        if (perm === 'granted') new Notification(stripEmojis(alert.title), { body: stripEmojis(alert.message) });
       });
     }
   }
@@ -1321,8 +1338,8 @@ function updateAlertDeliveryInHistory(alertId, delivery) {
     renderAlertsHistory();
   }
   if (delivery?.telegram?.ok) {
-    document.getElementById('bannerDelivery').textContent =
-      '✅ Web + @PureSiteTrading_bot gleichzeitig zugestellt!';
+    document.getElementById('bannerDelivery').innerHTML =
+      `${iconSvg('check')} Web + @PureSiteTrading_bot`;
   }
 }
 
@@ -1343,17 +1360,18 @@ function renderAlertsHistory() {
     .map((a) => {
       const timeStr = new Date(a.timestamp).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
       const tgOk = a.delivery?.telegram?.ok;
+      const badgeText = stripEmojis(a.phaseBadge || 'SIGNAL');
 
       return `<div class="tr-pos-row alert-item" data-symbol="${escapeHtml(a.symbol || '')}">
         <div class="tr-pos-left">
           <div class="tr-pos-title">
-            <span class="phase-tag p${a.phase || 4}">${escapeHtml(a.phaseBadge || 'SIGNAL')}</span>
-            <span>${escapeHtml(a.title)}</span>
+            <span class="phase-tag p${a.phase || 4}">${iconSvg(a.phase === 4 ? 'dot-p4' : 'bell')} ${escapeHtml(badgeText)}</span>
+            <span>${escapeHtml(stripEmojis(a.title))}</span>
           </div>
-          <div class="tr-pos-sub">${escapeHtml(a.message)}</div>
+          <div class="tr-pos-sub">${escapeHtml(stripEmojis(a.message))}</div>
         </div>
         <div class="tr-pos-right">
-          <div class="tr-pos-r">${timeStr} · ${tgOk ? 'Telegram ✓' : 'Web'}</div>
+          <div class="tr-pos-r" style="display:inline-flex;align-items:center;gap:4px;">${timeStr} · ${tgOk ? `${iconSvg('check')} Telegram` : 'Web'}</div>
         </div>
       </div>`;
     })
@@ -1493,7 +1511,7 @@ async function detectTelegramChatIdInModal() {
   const token = document.getElementById('setTelegramToken').value.trim();
   const fb = document.getElementById('telegramDetectFeedback');
   fb.classList.remove('hidden');
-  fb.textContent = '🔍 Suche nach deiner Nachricht an @PureSiteTrading_bot...';
+  fb.innerHTML = `${iconSvg('search')} Suche nach deiner Nachricht an @PureSiteTrading_bot...`;
 
   try {
     const res = await fetch('/api/telegram/detect-chat', {
@@ -1504,8 +1522,8 @@ async function detectTelegramChatIdInModal() {
     const data = await res.json();
     if (data.found) {
       document.getElementById('setTelegramChatId').value = data.chatId;
-      fb.style.borderColor = '#10b981';
-      fb.innerHTML = `✅ <b>Chat-ID erkannt:</b> <code>${escapeHtml(data.chatId)}</code> (${escapeHtml(data.chatTitle)}) – ab sofort gekoppelt!`;
+      fb.style.borderColor = '#00d09c';
+      fb.innerHTML = `${iconSvg('check')} <b>Chat-ID erkannt:</b> <code>${escapeHtml(data.chatId)}</code> (${escapeHtml(data.chatTitle)}) – ab sofort gekoppelt.`;
       if (state.snapshot?.settings) {
         state.snapshot.settings.telegramBotToken = token;
         state.snapshot.settings.telegramChatId = data.chatId;
@@ -1513,11 +1531,11 @@ async function detectTelegramChatIdInModal() {
       }
     } else {
       fb.style.borderColor = '#f59e0b';
-      fb.innerHTML = `⚠️ Noch keine Nachricht gefunden. Bitte klicke auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und drücke dort auf <b>Starten</b>!`;
+      fb.innerHTML = `${iconSvg('alert')} Noch keine Nachricht gefunden. Bitte klicke auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und drücke dort auf <b>Starten</b>.`;
     }
   } catch (err) {
-    fb.style.borderColor = '#ef4444';
-    fb.textContent = `❌ Fehler: ${err.message}`;
+    fb.style.borderColor = '#ff4d4f';
+    fb.innerHTML = `${iconSvg('x')} Fehler: ${escapeHtml(err.message)}`;
   }
 }
 
@@ -1539,13 +1557,43 @@ async function triggerTestAlert() {
     fb.classList.remove('hidden');
     const tg = data.alert?.delivery?.telegram;
     if (tg?.ok) {
-      fb.style.borderColor = '#10b981';
-      fb.innerHTML = `✅ <b>Test-Alarm gleichzeitig an Web-Dashboard UND @PureSiteTrading_bot (Chat ${escapeHtml(tg.chatId)}) gesendet!</b>`;
+      fb.style.borderColor = '#00d09c';
+      fb.innerHTML = `${iconSvg('check')} <b>Test-Alarm gleichzeitig an Web-Dashboard UND @PureSiteTrading_bot (Chat ${escapeHtml(tg.chatId)}) gesendet.</b>`;
     } else {
       fb.style.borderColor = '#f59e0b';
-      fb.innerHTML = `🔔 <b>Web-Dashboard-Alarm ausgelöst!</b> Für Telegram: Klicke erst auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und sende <code>/start</code>.`;
+      fb.innerHTML = `${iconSvg('bell')} <b>Web-Dashboard-Alarm ausgelöst.</b> Für Telegram: Klicke erst auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und sende <code>/start</code>.`;
     }
   }
+}
+
+function iconSvg(name) {
+  switch (name) {
+    case 'dot-p4':
+      return `<span class="tr-dot-ind p4"></span>`;
+    case 'bolt':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>`;
+    case 'eye':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    case 'check':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`;
+    case 'bell':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>`;
+    case 'search':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
+    case 'alert':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
+    case 'x':
+      return `<svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+    default:
+      return '';
+  }
+}
+
+function stripEmojis(str) {
+  return String(str ?? '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function escapeHtml(str) {

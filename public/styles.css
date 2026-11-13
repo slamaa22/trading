@@ -1038,3 +1038,104 @@ body {
   background: var(--green-bg);
   color: var(--green);
 }
+
+/* VECTOR SVG ICONS */
+.tr-ico {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.tr-ico-logo {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.3;
+}
+
+.tr-ico-xs {
+  width: 12px;
+  height: 12px;
+}
+
+.tr-ico-spin {
+  animation: trSpin 0.8s linear infinite;
+}
+
+@keyframes trSpin {
+  to { transform: rotate(360deg); }
+}
+
+.tr-btn-icon-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tr-btn-icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+.tr-heading-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.tr-dot-ind {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.tr-dot-ind.p4 {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+
+.tr-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tr-search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.tr-search-ico {
+  position: absolute;
+  left: 10px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.tr-search-input-wrap input {
+  padding-left: 30px;
+}
+
+.phase-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tr-tg-pill.connected .tr-ico {
+  color: var(--green);
+}
+
