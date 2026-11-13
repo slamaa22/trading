@@ -58,7 +58,7 @@ export class MarketDataService {
   /**
    * Ruft für eine Liste von Symbolen Batch-Quotes (inkl. KGV, Forward P/E, Earnings-Zeitpunkt, SMA200) ab.
    */
-  async fetchBatchQuotes(symbols = []) {
+  async fetchBatchQuotes(symbols = [], { timeoutMs = 8000 } = {}) {
     const resultMap = new Map();
     if (!symbols.length) return resultMap;
 
@@ -75,7 +75,8 @@ export class MarketDataService {
             chunk.join(',')
           )}&crumb=${encodeURIComponent(crumb)}`;
           const res = await fetch(url, {
-            headers: { 'User-Agent': USER_AGENT, Cookie: cookieStr }
+            headers: { 'User-Agent': USER_AGENT, Cookie: cookieStr },
+            signal: AbortSignal.timeout(timeoutMs)
           });
           if (res.ok) {
             const json = await res.json();

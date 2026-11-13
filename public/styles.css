@@ -839,6 +839,35 @@ body {
   box-shadow: none;
 }
 
+.demo-tick-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  padding: 2px 9px;
+  border-radius: 99px;
+  letter-spacing: 0.3px;
+}
+
+.tick-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.demo-tick-pill.pulse .tick-dot {
+  transform: scale(1.45);
+  box-shadow: 0 0 12px #34d399;
+}
+
 .demo-strip-actions {
   display: flex;
   align-items: center;

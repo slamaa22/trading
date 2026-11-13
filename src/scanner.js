@@ -68,6 +68,9 @@ export class StrategyScanner {
     this.lastScanAt = null;
     this.nextScanAt = null;
     this.scanTimer = null;
+    this.demoLiveTimer = null;
+    this.isDemoTickRunning = false;
+    this.watchedSymbols = new Map(); // clientId -> symbol
 
     // Live Wechselkurse nach EUR (Fallback: 1 USD = 0.92 EUR, 1 CHF = 1.06 EUR)
     this.fxToEur = {
@@ -196,9 +199,107 @@ export class StrategyScanner {
 
   startAutoScan() {
     this.restartAutoScan();
+    this.startDemoLiveTicker();
     this.runFullScan({ reason: 'initial' }).catch((err) => {
       console.error('Initialer Scan-Fehler:', err.message);
     });
+  }
+
+  setWatchedSymbol(clientId, symbol) {
+    if (!clientId) return;
+    if (symbol) {
+      this.watchedSymbols.set(clientId, String(symbol).trim().toUpperCase());
+    } else {
+      this.watchedSymbols.delete(clientId);
+    }
+  }
+
+  removeWatchedClient(clientId) {
+    if (clientId) this.watchedSymbols.delete(clientId);
+  }
+
+  startDemoLiveTicker() {
+    if (this.demoLiveTimer) clearInterval(this.demoLiveTimer);
+    this.demoLiveTimer = setInterval(() => {
+      this.runDemoLiveTick().catch((err) => {
+        console.error('Demo-Live-Tick Fehler:', err.message);
+      });
+    }, 1000);
+  }
+
+  async runDemoLiveTick() {
+    if (this.isDemoTickRunning) return;
+    this.isDemoTickRunning = true;
+
+    try {
+      const openTrades = this.state.activeTrades.filter((t) => t.status === 'OPEN');
+      const liveSymbolSet = new Set();
+
+      for (const t of openTrades) {
+        if (t.symbol) liveSymbolSet.add(t.symbol);
+      }
+      for (const sym of this.watchedSymbols.values()) {
+        if (sym) liveSymbolSet.add(sym);
+      }
+
+      const livePrices = {};
+      const targetSymbols = Array.from(liveSymbolSet).slice(0, 15);
+
+      if (targetSymbols.length > 0 && this.notifier.wsClients.size > 0) {
+        try {
+          const quoteMap = await this.marketData.fetchBatchQuotes(targetSymbols, { timeoutMs: 850 });
+          for (const sym of targetSymbols) {
+            const rawQ = quoteMap.get(sym);
+            const rec = this.stockResults.get(sym);
+            if (!rawQ || !rec || rec.isSimulation) continue;
+
+            const fx = this.getFxRateToEur(rec.nativeCurrency || rawQ.currency || 'EUR');
+            const qEur = this.convertQuoteToEur(rawQ, fx);
+            const newPrice = Number(qEur.regularMarketPrice || 0);
+            if (newPrice > 0) {
+              rec.price = Math.round(newPrice * 100) / 100;
+              rec.intradayChangePct = Math.round(Number(rawQ.regularMarketChangePercent ?? rec.intradayChangePct ?? 0) * 100) / 100;
+              if (rec.analysis) rec.analysis.currentPrice = rec.price;
+              rec.updatedAt = new Date().toISOString();
+
+              const bars = this.m10Store.get(sym);
+              let lastBar = null;
+              if (Array.isArray(bars) && bars.length > 0) {
+                lastBar = bars[bars.length - 1];
+                lastBar.close = rec.price;
+                if (rec.price > lastBar.high) lastBar.high = rec.price;
+                if (rec.price < lastBar.low) lastBar.low = rec.price;
+              }
+
+              livePrices[sym] = {
+                price: rec.price,
+                intradayChangePct: rec.intradayChangePct,
+                lastBar
+              };
+            }
+          }
+        } catch {
+          // Wenn einzelner 1s-Quote-Abruf langsam ist, trotzdem Demo-Account-Tick senden
+        }
+      }
+
+      if (openTrades.length > 0) {
+        await this.evaluateAllActiveTrades();
+      }
+
+      if (this.notifier.wsClients.size > 0) {
+        this.notifier.broadcastWs({
+          type: 'DEMO_LIVE_TICK',
+          serverTime: new Date().toISOString(),
+          demoAccount: this.getDemoMetrics(),
+          activeTrades: this.state.activeTrades,
+          journal: this.state.journal.slice(0, 20),
+          livePrices
+        });
+      }
+    } finally {
+      this.isDemoTickRunning = false;
+    }
   }
 
   restartAutoScan() {
@@ -999,6 +1100,14 @@ export class StrategyScanner {
 
     this.state.activeTrades.unshift(trade);
     this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_LIVE_TICK',
+      serverTime: new Date().toISOString(),
+      demoAccount: this.getDemoMetrics(),
+      activeTrades: this.state.activeTrades,
+      journal: this.state.journal.slice(0, 20),
+      livePrices: {}
+    });
     return trade;
   }
 
@@ -1097,6 +1206,14 @@ export class StrategyScanner {
     this.state.settings.accountCapital = Math.round(updatedMetrics.totalEquityEuro);
 
     this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_LIVE_TICK',
+      serverTime: new Date().toISOString(),
+      demoAccount: updatedMetrics,
+      activeTrades: this.state.activeTrades,
+      journal: this.state.journal.slice(0, 20),
+      livePrices: {}
+    });
     return journalEntry;
   }
 

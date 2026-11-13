@@ -24,7 +24,8 @@ const state = {
   vwapSeries: null,
   rsiSeries: null,
   lodPriceLine: null,
-  slPriceLine: null
+  slPriceLine: null,
+  lastDemoTickAt: 0
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -32,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   bindUIEvents();
   connectWebSocket();
   fetchInitialSnapshot();
+  startDemoLiveFallbackLoop();
 });
 
 // --- TRADINGVIEW LIGHTWEIGHT CHARTS INITIALISIERUNG ---
@@ -484,6 +486,9 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     document.getElementById('wsStatusDot').classList.remove('scanning');
+    if (state.selectedSymbol) {
+      ws.send(JSON.stringify({ type: 'WATCH_SYMBOL', symbol: state.selectedSymbol }));
+    }
   };
 
   ws.onmessage = (event) => {
@@ -491,6 +496,8 @@ function connectWebSocket() {
       const data = JSON.parse(event.data);
       if (data.type === 'INITIAL_SNAPSHOT' || data.type === 'SCAN_COMPLETED') {
         applySnapshot(data.snapshot);
+      } else if (data.type === 'DEMO_LIVE_TICK') {
+        handleDemoLiveTick(data);
       } else if (data.type === 'DEMO_ACCOUNT_UPDATED') {
         if (state.snapshot) {
           state.snapshot.demoAccount = data.demoAccount;
@@ -520,6 +527,98 @@ function connectWebSocket() {
   ws.onclose = () => {
     setTimeout(connectWebSocket, 3000);
   };
+}
+
+function startDemoLiveFallbackLoop() {
+  setInterval(async () => {
+    const msSinceLastTick = Date.now() - (state.lastDemoTickAt || 0);
+    if (state.ws?.readyState === 1 && msSinceLastTick < 1800) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/demo/live');
+      if (res.ok) {
+        const data = await res.json();
+        handleDemoLiveTick(data);
+      }
+    } catch {
+      // Ignoriere kurzzeitige Netzwerkfehler beim 1s-Fallback
+    }
+  }, 1000);
+}
+
+function handleDemoLiveTick(data) {
+  if (!data) return;
+  state.lastDemoTickAt = Date.now();
+
+  // 1-Sekunden-Takt Uhr & Puls im Demo-Header aktualisieren
+  const clockEl = document.getElementById('demoTickClock');
+  if (clockEl) {
+    const tStr = (data.serverTime ? new Date(data.serverTime) : new Date()).toLocaleTimeString('de-DE', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    clockEl.innerHTML = `<i class="tick-dot"></i> LIVE 1s · ${tStr}`;
+    clockEl.classList.add('pulse');
+    setTimeout(() => clockEl.classList.remove('pulse'), 180);
+  }
+
+  if (!state.snapshot) return;
+
+  if (data.demoAccount) {
+    state.snapshot.demoAccount = data.demoAccount;
+    renderDemoAccount();
+  }
+
+  if (Array.isArray(data.activeTrades)) {
+    state.snapshot.activeTrades = data.activeTrades;
+  }
+  if (Array.isArray(data.journal) && data.journal.length !== (state.snapshot.journal?.length || 0)) {
+    state.snapshot.journal = data.journal;
+  }
+
+  // Aktive Trades & Orderbuch ohne Scroll-Sprung jede Sekunde aktualisieren
+  const tradesList = document.getElementById('activeTradesList');
+  const prevScroll = tradesList ? tradesList.scrollTop : 0;
+  renderActiveTradesAndJournal();
+  if (tradesList) tradesList.scrollTop = prevScroll;
+
+  // Live-Preise für beobachtete & offene Aktien im UI & M10-Chart aktualisieren
+  if (data.livePrices && typeof data.livePrices === 'object') {
+    for (const [sym, info] of Object.entries(data.livePrices)) {
+      const rec = (state.snapshot.stocks || []).find((s) => s.symbol === sym);
+      if (rec && info.price > 0) {
+        rec.price = info.price;
+        rec.intradayChangePct = info.intradayChangePct;
+      }
+
+      if (sym === state.selectedSymbol && info.price > 0) {
+        const priceEl = document.getElementById('detailCurrentPrice');
+        if (priceEl) priceEl.textContent = `${Number(info.price).toFixed(2)} €`;
+
+        const chgEl = document.getElementById('detailIntradayChange');
+        if (chgEl && Number.isFinite(info.intradayChangePct)) {
+          const chg = Number(info.intradayChangePct);
+          chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% heute`;
+          chgEl.className = `delta-pill ${chg >= 0 ? 'pos' : 'neg'}`;
+        }
+
+        if (info.lastBar && state.candleSeries && state.chartBars?.length > 0) {
+          const lastChartBar = state.chartBars[state.chartBars.length - 1];
+          if (lastChartBar && info.lastBar.time >= lastChartBar.time) {
+            state.candleSeries.update({
+              time: info.lastBar.time,
+              open: Number(info.lastBar.open),
+              high: Number(info.lastBar.high),
+              low: Number(info.lastBar.low),
+              close: Number(info.lastBar.close)
+            });
+          }
+        }
+      }
+    }
+  }
 }
 
 async function fetchInitialSnapshot() {
@@ -913,6 +1012,9 @@ function renderStockList() {
 // --- MAIN STAGE: HERO DETAILS, 4-PHASEN-STEPPER & M10 CHART ---
 
 async function loadChartForSymbol(symbol, forceRefresh = false) {
+  if (state.ws?.readyState === 1 && symbol) {
+    state.ws.send(JSON.stringify({ type: 'WATCH_SYMBOL', symbol }));
+  }
   try {
     const res = await fetch(`/api/chart/${encodeURIComponent(symbol)}${forceRefresh ? '?refresh=1' : ''}`);
     const data = await res.json();

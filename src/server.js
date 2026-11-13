@@ -244,6 +244,15 @@ app.post('/api/trades', (req, res) => {
   }
 });
 
+app.get('/api/demo/live', (req, res) => {
+  res.json({
+    serverTime: new Date().toISOString(),
+    demoAccount: scanner.getDemoMetrics(),
+    activeTrades: scanner.state.activeTrades,
+    journal: scanner.state.journal.slice(0, 20)
+  });
+});
+
 app.post('/api/trades/:id/close', (req, res) => {
   try {
     const journalEntry = scanner.closeActiveTrade(
@@ -263,7 +272,25 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 wss.on('connection', (ws) => {
+  const clientId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   notifier.registerWsClient(ws);
+  scanner.setWatchedSymbol(clientId, 'SY1.DE');
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(String(raw));
+      if (msg.type === 'WATCH_SYMBOL' && msg.symbol) {
+        scanner.setWatchedSymbol(clientId, msg.symbol);
+      }
+    } catch {
+      // Ignore malformed WS message
+    }
+  });
+
+  ws.on('close', () => {
+    scanner.removeWatchedClient(clientId);
+  });
+
   ws.send(
     JSON.stringify({
       type: 'INITIAL_SNAPSHOT',
