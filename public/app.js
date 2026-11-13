@@ -1,33 +1,280 @@
 /**
- * Frontend-Applikation für das Antizyklische Mean-Reversion-Strategie Playbook Tool
- * - Echtzeit-WebSocket-Empfang (parallel zu Telegram)
- * - Akustischer WebAudio-Signalton & Browser-Benachrichtigungen
- * - Interaktiver 10-Minuten-Kerzenchart (M10) mit EMA 20, VWAP, Tagestief (LoD), Stop-Loss & RSI(14)
- * - 4-Phasen-Stepper, 4 Konfluenz-Signale & 9-Punkte Pre-Trade-Checkliste
- * - 5%-Risiko- & Knock-Out-Derivate-Rechner (Hebel 5x–10x) + Stagnations-Exit-Überwachung
+ * Mean-Reversion Playbook Terminal (TradingView Lightweight Charts Edition)
+ * - Echte 10-Minuten-Kerzen (M10), EMA 20, Intraday-VWAP, Volumen, Tagestief (LoD), Stop-Loss & RSI(14)
+ * - Alle 51 Qualitätsaktien & 7 Leitindizes in Echtzeit
+ * - @PureSiteTrading_bot Direkt-Kopplung & synchrone Web-/Telegram-Alarme
  */
 
 const state = {
   snapshot: null,
   selectedSymbol: 'SY1.DE',
   activeFilter: 'all',
+  activeRegion: 'ALL',
   searchQuery: '',
   chartBars: [],
   chartRecord: null,
-  hoverBarIndex: null,
-  ws: null
+  ws: null,
+
+  // TradingView Lightweight Charts Instanzen
+  tvMain: null,
+  tvRsi: null,
+  candleSeries: null,
+  volumeSeries: null,
+  emaSeries: null,
+  vwapSeries: null,
+  rsiSeries: null,
+  lodPriceLine: null,
+  slPriceLine: null
 };
 
-// --- INITIALISIERUNG ---
 document.addEventListener('DOMContentLoaded', () => {
+  initTradingViewCharts();
   bindUIEvents();
   connectWebSocket();
   fetchInitialSnapshot();
-  window.addEventListener('resize', () => renderM10CanvasChart());
 });
 
+// --- TRADINGVIEW LIGHTWEIGHT CHARTS INITIALISIERUNG ---
+
+function initTradingViewCharts() {
+  const mainEl = document.getElementById('tvMainChart');
+  const rsiEl = document.getElementById('tvRsiChart');
+  if (!mainEl || !rsiEl || !window.LightweightCharts) return;
+
+  const LWC = window.LightweightCharts;
+
+  state.tvMain = LWC.createChart(mainEl, {
+    width: mainEl.clientWidth || 800,
+    height: 330,
+    layout: {
+      background: { type: 'solid', color: '#070b14' },
+      textColor: '#94a3b8',
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 11
+    },
+    grid: {
+      vertLines: { color: 'rgba(148, 163, 184, 0.06)' },
+      horzLines: { color: 'rgba(148, 163, 184, 0.06)' }
+    },
+    crosshair: {
+      mode: LWC.CrosshairMode.Normal
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148, 163, 184, 0.14)',
+      scaleMargins: { top: 0.08, bottom: 0.22 }
+    },
+    timeScale: {
+      borderColor: 'rgba(148, 163, 184, 0.14)',
+      timeVisible: true,
+      secondsVisible: false
+    }
+  });
+
+  state.candleSeries = state.tvMain.addCandlestickSeries({
+    upColor: '#10b981',
+    downColor: '#ef4444',
+    borderUpColor: '#10b981',
+    borderDownColor: '#ef4444',
+    wickUpColor: '#10b981',
+    wickDownColor: '#ef4444'
+  });
+
+  state.volumeSeries = state.tvMain.addHistogramSeries({
+    priceFormat: { type: 'volume' },
+    priceScaleId: ''
+  });
+  state.volumeSeries.priceScale().applyOptions({
+    scaleMargins: { top: 0.80, bottom: 0 }
+  });
+
+  state.emaSeries = state.tvMain.addLineSeries({
+    color: '#38bdf8',
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    title: 'EMA 20'
+  });
+
+  state.vwapSeries = state.tvMain.addLineSeries({
+    color: '#a855f7',
+    lineWidth: 2,
+    lineStyle: LWC.LineStyle.Dashed,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    title: 'VWAP'
+  });
+
+  // RSI(14) Sub-Chart
+  state.tvRsi = LWC.createChart(rsiEl, {
+    width: rsiEl.clientWidth || 800,
+    height: 115,
+    layout: {
+      background: { type: 'solid', color: '#070b14' },
+      textColor: '#64748b',
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 10.5
+    },
+    grid: {
+      vertLines: { color: 'rgba(148, 163, 184, 0.05)' },
+      horzLines: { color: 'rgba(148, 163, 184, 0.06)' }
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148, 163, 184, 0.14)',
+      scaleMargins: { top: 0.12, bottom: 0.12 }
+    },
+    timeScale: {
+      visible: false
+    }
+  });
+
+  state.rsiSeries = state.tvRsi.addLineSeries({
+    color: '#10b981',
+    lineWidth: 2,
+    priceLineVisible: false,
+    title: 'RSI 14'
+  });
+
+  // RSI 30 & 70 Referenzlinien
+  state.rsiSeries.createPriceLine({
+    price: 30,
+    color: 'rgba(16, 185, 129, 0.5)',
+    lineWidth: 1,
+    lineStyle: LWC.LineStyle.Dashed,
+    axisLabelVisible: true,
+    title: '30'
+  });
+  state.rsiSeries.createPriceLine({
+    price: 70,
+    color: 'rgba(239, 68, 68, 0.4)',
+    lineWidth: 1,
+    lineStyle: LWC.LineStyle.Dashed,
+    axisLabelVisible: true,
+    title: '70'
+  });
+
+  // Synchronisiere sichtbare Zeitskala zwischen Hauptchart und RSI-Chart
+  state.tvMain.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (range) state.tvRsi.timeScale().setVisibleLogicalRange(range);
+  });
+
+  // Crosshair-Hover Info
+  state.tvMain.subscribeCrosshairMove((param) => {
+    const infoEl = document.getElementById('chartHoverInfo');
+    if (!param || !param.time || !param.seriesData) {
+      infoEl.textContent = 'Maus über Chart bewegen für exakte M10-Kerzendaten';
+      return;
+    }
+    const c = param.seriesData.get(state.candleSeries);
+    if (!c) return;
+    const tStr = new Date(param.time * 1000).toLocaleTimeString('de-DE', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    const chgPct = c.open ? (((c.close - c.open) / c.open) * 100).toFixed(2) : '0.00';
+    infoEl.innerHTML = `<b>${tStr} Uhr</b> · O: ${c.open.toFixed(2)} · H: ${c.high.toFixed(2)} · L: ${c.low.toFixed(2)} · <b>C: ${c.close.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct}%)</b>`;
+  });
+
+  // Responsive ResizeObserver
+  const ro = new ResizeObserver(() => {
+    if (state.tvMain && mainEl.clientWidth > 0) {
+      state.tvMain.applyOptions({ width: mainEl.clientWidth });
+    }
+    if (state.tvRsi && rsiEl.clientWidth > 0) {
+      state.tvRsi.applyOptions({ width: rsiEl.clientWidth });
+    }
+  });
+  ro.observe(mainEl);
+}
+
+function updateTradingViewChartData() {
+  if (!state.candleSeries || !state.chartBars || state.chartBars.length === 0) return;
+  const LWC = window.LightweightCharts;
+
+  // Dedupliziere & sortiere nach Zeit aufsteigend
+  const seen = new Set();
+  const sorted = [...state.chartBars]
+    .sort((a, b) => a.time - b.time)
+    .filter((b) => {
+      if (!b.time || seen.has(b.time)) return false;
+      seen.add(b.time);
+      return true;
+    });
+
+  const candles = sorted.map((b) => ({
+    time: b.time,
+    open: Number(b.open),
+    high: Number(b.high),
+    low: Number(b.low),
+    close: Number(b.close)
+  }));
+
+  const volumes = sorted.map((b) => ({
+    time: b.time,
+    value: Number(b.volume || 0),
+    color: b.close >= b.open ? 'rgba(16, 185, 129, 0.28)' : 'rgba(239, 68, 68, 0.28)'
+  }));
+
+  const emaData = sorted
+    .filter((b) => Number.isFinite(b.ema20))
+    .map((b) => ({ time: b.time, value: Number(b.ema20) }));
+
+  const vwapData = sorted
+    .filter((b) => Number.isFinite(b.vwap))
+    .map((b) => ({ time: b.time, value: Number(b.vwap) }));
+
+  const rsiData = sorted
+    .filter((b) => Number.isFinite(b.rsi14))
+    .map((b) => ({ time: b.time, value: Number(b.rsi14) }));
+
+  state.candleSeries.setData(candles);
+  state.volumeSeries.setData(volumes);
+  state.emaSeries.setData(emaData);
+  state.vwapSeries.setData(vwapData);
+  state.rsiSeries.setData(rsiData);
+
+  // Entferne alte Preislinien (LoD & Stop-Loss) und zeichne aktuelle ein
+  if (state.lodPriceLine) {
+    state.candleSeries.removePriceLine(state.lodPriceLine);
+    state.lodPriceLine = null;
+  }
+  if (state.slPriceLine) {
+    state.candleSeries.removePriceLine(state.slPriceLine);
+    state.slPriceLine = null;
+  }
+
+  const rec = state.chartRecord;
+  const lodPrice = rec?.analysis?.lodPrice;
+  const slPrice = rec?.sizing?.stopLossStock;
+
+  if (lodPrice && lodPrice > 0) {
+    state.lodPriceLine = state.candleSeries.createPriceLine({
+      price: Number(lodPrice),
+      color: '#f59e0b',
+      lineWidth: 2,
+      lineStyle: LWC.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: `Tagestief (LoD) ${lodPrice.toFixed(2)}`
+    });
+  }
+
+  if (slPrice && slPrice > 0) {
+    state.slPriceLine = state.candleSeries.createPriceLine({
+      price: Number(slPrice),
+      color: '#ef4444',
+      lineWidth: 2,
+      lineStyle: LWC.LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: `Stop-Loss ${slPrice.toFixed(2)}`
+    });
+  }
+
+  state.tvMain.timeScale().fitContent();
+  state.tvRsi.timeScale().fitContent();
+}
+
+// --- UI EVENTS ---
+
 function bindUIEvents() {
-  // Jetzt scannen
   document.getElementById('btnScanNow').addEventListener('click', async () => {
     const btn = document.getElementById('btnScanNow');
     btn.disabled = true;
@@ -38,7 +285,7 @@ function bindUIEvents() {
       applySnapshot(snap);
     } finally {
       btn.disabled = false;
-      btn.textContent = '↻ Jetzt Scannen';
+      btn.textContent = '↻ Scan';
     }
   });
 
@@ -59,12 +306,22 @@ function bindUIEvents() {
     });
   });
 
-  // Phasen-Filter Tabs
-  document.querySelectorAll('#phaseFilterTabs .filter-tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('#phaseFilterTabs .filter-tab').forEach((t) => t.classList.remove('active'));
-      tab.classList.add('active');
-      state.activeFilter = tab.getAttribute('data-filter');
+  // Phasen-Filter Pills
+  document.querySelectorAll('#phaseFilterTabs .filter-pill').forEach((pill) => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('#phaseFilterTabs .filter-pill').forEach((p) => p.classList.remove('active'));
+      pill.classList.add('active');
+      state.activeFilter = pill.getAttribute('data-filter');
+      renderStockList();
+    });
+  });
+
+  // Region-Filter Chips
+  document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#regionFilterTabs .reg-chip').forEach((c) => c.classList.remove('active'));
+      chip.classList.add('active');
+      state.activeRegion = chip.getAttribute('data-region');
       renderStockList();
     });
   });
@@ -75,43 +332,51 @@ function bindUIEvents() {
     renderStockList();
   });
 
-  // Aktie zur Watchlist hinzufügen
+  // Aktie hinzufügen
   document.getElementById('btnAddSymbol').addEventListener('click', addStockFromInput);
   document.getElementById('inputAddSymbol').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') addStockFromInput();
   });
 
-  // Chart aktualisieren
+  // Chart Aktionen
   document.getElementById('btnRefreshChart').addEventListener('click', () => {
     if (state.selectedSymbol) loadChartForSymbol(state.selectedSymbol, true);
   });
+  document.getElementById('btnFitChart').addEventListener('click', () => {
+    state.tvMain?.timeScale().fitContent();
+    state.tvRsi?.timeScale().fitContent();
+  });
 
-  // Rechte Spalte Tabs
-  document.querySelectorAll('.right-tab').forEach((tab) => {
+  // Workbench Tabs (Alarme / Aktive Trades / Journal)
+  document.querySelectorAll('.wb-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
-      const target = tab.getAttribute('data-rtab');
-      document.querySelectorAll('.right-tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.rtab-content').forEach((c) => c.classList.remove('active'));
+      const target = tab.getAttribute('data-wbtab');
+      document.querySelectorAll('.wb-tab').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.wb-pane').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById(`rtab-${target}`).classList.add('active');
+      document.getElementById(`wbtab-${target}`).classList.add('active');
     });
   });
 
   // 5%-Risiko-Rechner Inputs
   ['calcCapital', 'calcRiskPct', 'calcEntryPrice', 'calcLodPrice', 'calcNoiseBuffer', 'calcLeverage', 'calcCertPrice', 'calcCertRatio'].forEach((id) => {
-    document.getElementById(id).addEventListener('input', recalculateSizingFromInputs);
-    document.getElementById(id).addEventListener('change', recalculateSizingFromInputs);
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', recalculateSizingFromInputs);
+      el.addEventListener('change', recalculateSizingFromInputs);
+    }
   });
 
-  // Trade aus Rechner aktivieren
   document.getElementById('btnOpenTradeFromCalc').addEventListener('click', openActiveTradeFromCalculator);
 
-  // Live Alert Banner Buttons
+  // Live Toast Banner
   document.getElementById('btnBannerClose').addEventListener('click', () => {
     document.getElementById('liveAlertBanner').classList.add('hidden');
   });
 
-  // Test-Alarm Button
+  // Telegram Quick-Connect Buttons in Topbar & Modal
+  document.getElementById('btnQuickDetectChat').addEventListener('click', quickDetectChatFromHeader);
+  document.getElementById('btnQuickTestAlert').addEventListener('click', triggerTestAlert);
   document.getElementById('btnTriggerTestAlert').addEventListener('click', triggerTestAlert);
   document.getElementById('btnModalTestAlert').addEventListener('click', triggerTestAlert);
 
@@ -120,16 +385,7 @@ function bindUIEvents() {
   document.getElementById('btnCloseSettings').addEventListener('click', closeSettingsModal);
   document.getElementById('btnCancelSettings').addEventListener('click', closeSettingsModal);
   document.getElementById('btnSaveSettings').addEventListener('click', saveSettingsFromModal);
-  document.getElementById('btnDetectChatId').addEventListener('click', detectTelegramChatId);
-
-  // Canvas Hover für M10-Kerzen-Details
-  const canvas = document.getElementById('m10ChartCanvas');
-  canvas.addEventListener('mousemove', handleCanvasMouseMove);
-  canvas.addEventListener('mouseleave', () => {
-    state.hoverBarIndex = null;
-    document.getElementById('chartTooltip').classList.add('hidden');
-    renderM10CanvasChart();
-  });
+  document.getElementById('btnDetectChatId').addEventListener('click', detectTelegramChatIdInModal);
 }
 
 // --- WEBSOCKET & SNAPSHOT ---
@@ -141,7 +397,6 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     document.getElementById('wsStatusDot').classList.remove('scanning');
-    document.getElementById('scanStatusText').textContent = 'Live verbunden';
   };
 
   ws.onmessage = (event) => {
@@ -153,7 +408,7 @@ function connectWebSocket() {
         const dot = document.getElementById('wsStatusDot');
         if (data.isScanning) {
           dot.classList.add('scanning');
-          document.getElementById('scanStatusText').textContent = 'Scanne M10-Charts...';
+          document.getElementById('scanStatusText').textContent = 'Scanne M10...';
         }
       } else if (data.type === 'LIVE_ALERT') {
         handleIncomingLiveAlert(data.alert);
@@ -162,16 +417,15 @@ function connectWebSocket() {
       } else if (data.type === 'SETTINGS_UPDATED') {
         if (state.snapshot) {
           state.snapshot.settings = data.settings;
-          updateTelegramBadge();
+          updateTelegramStatusUI();
         }
       }
     } catch (err) {
-      console.error('WS Nachricht Fehler:', err);
+      console.error('WS Fehler:', err);
     }
   };
 
   ws.onclose = () => {
-    document.getElementById('scanStatusText').textContent = 'Verbindung getrennt – Verbinde neu...';
     setTimeout(connectWebSocket, 3000);
   };
 }
@@ -182,7 +436,7 @@ async function fetchInitialSnapshot() {
     const snap = await res.json();
     applySnapshot(snap);
   } catch (err) {
-    console.error('Fehler beim Laden des Snapshots:', err);
+    console.error('Snapshot Fehler:', err);
   }
 }
 
@@ -190,31 +444,35 @@ function applySnapshot(snapshot) {
   if (!snapshot) return;
   state.snapshot = snapshot;
 
+  const stocks = snapshot.stocks || [];
+  const loadedCount = stocks.filter((s) => s.price > 0).length;
+
   const dot = document.getElementById('wsStatusDot');
   if (snapshot.isScanning) {
     dot.classList.add('scanning');
-    document.getElementById('scanStatusText').textContent = 'Scanne M10-Charts...';
+    document.getElementById('scanStatusText').textContent = `Scanne (${loadedCount}/${stocks.length})...`;
   } else {
     dot.classList.remove('scanning');
     const t = snapshot.lastScanAt
-      ? new Date(snapshot.lastScanAt).toLocaleTimeString('de-DE')
+      ? new Date(snapshot.lastScanAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : 'Bereit';
-    document.getElementById('scanStatusText').textContent = `Live · Letzter Scan: ${t}`;
+    document.getElementById('scanStatusText').textContent = `${loadedCount}/${stocks.length} Live · ${t}`;
   }
 
-  updateTelegramBadge();
+  updateTelegramStatusUI();
   renderIndexRegimes();
   renderStockList();
   renderActiveTradesAndJournal();
   renderAlertsHistory();
 
-  // Falls noch keine Aktie ausgewählt ist, wähle die erste (höchste Phase)
-  if (!state.selectedSymbol && snapshot.stocks && snapshot.stocks.length > 0) {
-    state.selectedSymbol = snapshot.stocks[0].symbol;
+  if (!state.selectedSymbol && stocks.length > 0) {
+    state.selectedSymbol = stocks[0].symbol;
   }
+
   if (state.selectedSymbol) {
-    const rec = (snapshot.stocks || []).find((s) => s.symbol === state.selectedSymbol);
+    const rec = stocks.find((s) => s.symbol === state.selectedSymbol);
     if (rec) {
+      state.chartRecord = rec;
       renderSelectedStockDetails(rec);
     }
     if (state.chartBars.length === 0) {
@@ -223,17 +481,62 @@ function applySnapshot(snapshot) {
   }
 }
 
-function updateTelegramBadge() {
+function updateTelegramStatusUI() {
   const s = state.snapshot?.settings || {};
-  const el = document.getElementById('tgStatusIndicator');
-  if (s.telegramBotToken && s.telegramChatId && s.telegramEnabled !== false) {
-    el.textContent = `📲 Telegram Verbunden (${s.telegramChatId}) · ⚙️ Setup`;
+  const bar = document.getElementById('tgConnectBar');
+  const dot = document.getElementById('tgStatusDot');
+  const title = document.getElementById('tgBotTitle');
+  const sub = document.getElementById('tgBotSub');
+  const openBtn = document.getElementById('btnOpenTelegramBot');
+
+  if (s.telegramBotToken && s.telegramChatId) {
+    bar.classList.add('connected');
+    dot.classList.add('connected');
+    title.textContent = `@PureSiteTrading_bot · Verbunden (ID: ${s.telegramChatId})`;
+    sub.textContent = 'Echtzeit-Alarme werden synchron an Web & Telegram gesendet';
+    openBtn.textContent = '📲 Telegram öffnen';
   } else {
-    el.textContent = `⚙️ Telegram & Risiko-Setup`;
+    bar.classList.remove('connected');
+    dot.classList.remove('connected');
+    title.textContent = '@PureSiteTrading_bot (API-Key hinterlegt)';
+    sub.textContent = 'Klicke auf „1. Bot in Telegram öffnen (/start)“ & danach auf „2. Chat-ID koppeln“';
+    openBtn.textContent = '📲 1. Bot in Telegram öffnen (/start)';
   }
 }
 
-// --- GESAMTMARKT-REGIME BAR (KAPITEL 2.3) ---
+async function quickDetectChatFromHeader() {
+  const btn = document.getElementById('btnQuickDetectChat');
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Prüfe...';
+  try {
+    const res = await fetch('/api/telegram/detect-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (data.found) {
+      if (state.snapshot?.settings) {
+        state.snapshot.settings.telegramChatId = data.chatId;
+      }
+      updateTelegramStatusUI();
+      btn.textContent = `✅ Gekoppelt (${data.chatId})`;
+      // Direkt Begrüßungs-/Test-Alarm schicken
+      await triggerTestAlert();
+    } else {
+      btn.textContent = '⚠️ Erst /start im Bot klicken!';
+      window.open('https://t.me/PureSiteTrading_bot?start=connect', '_blank');
+    }
+  } catch {
+    btn.textContent = '❌ Fehler';
+  } finally {
+    setTimeout(() => {
+      btn.textContent = orig;
+    }, 3500);
+  }
+}
+
+// --- LEITINDIZES REGIME RIBBON ---
 
 function renderIndexRegimes() {
   const container = document.getElementById('indexRegimeItems');
@@ -241,36 +544,55 @@ function renderIndexRegimes() {
   const entries = Object.values(regimes);
 
   if (entries.length === 0) {
-    container.innerHTML = `<span class="muted">Leitindizes werden geprüft...</span>`;
+    container.innerHTML = `<span class="sub-counter">Leitindizes werden synchronisiert...</span>`;
     return;
   }
 
   container.innerHTML = entries
     .map((r) => {
-      const sign = r.changePct >= 0 ? '+' : '';
+      const chg = Number(r.changePct || 0);
+      const sign = chg >= 0 ? '+' : '';
       const cls = r.isFallingHard ? 'warn' : 'ok';
-      const icon = r.isFallingHard ? '⚠️' : '🟢';
-      return `<div class="regime-chip ${cls}" title="${escapeHtml(r.summary)}">
-        <span>${icon} <b>${escapeHtml(r.name)}</b></span>
-        <span>${sign}${Number(r.changePct || 0).toFixed(2)}%</span>
+      const color = chg >= 0 ? '#34d399' : '#f87171';
+      return `<div class="regime-pill ${cls}" title="${escapeHtml(r.summary)}">
+        <strong>${escapeHtml(r.name)}</strong>
+        <span class="idx-val" style="color:${color}">${sign}${chg.toFixed(2)}%</span>
       </div>`;
     })
     .join('');
 }
 
-// --- LINKE SPALTE: AKTIEN-LISTE ---
+// --- SIDEBAR: AKTIEN-LISTE (ALLE 51 QUALITÄTSAKTIEN) ---
 
 function renderStockList() {
   const container = document.getElementById('stockListContainer');
   const stocks = state.snapshot?.stocks || [];
-  document.getElementById('universeCountLabel').textContent = `${stocks.length} Qualitätsaktien überwacht`;
+  const withPrice = stocks.filter((s) => s.price > 0).length;
+
+  document.getElementById('universeCountLabel').textContent = `${withPrice} / ${stocks.length} Qualitätsaktien mit Live-Kurs`;
+
+  // Zähler für Filter-Pills aktualisieren
+  const p4Cnt = stocks.filter((s) => s.analysis?.phase === 4).length;
+  const p3Cnt = stocks.filter((s) => s.analysis?.phase === 3).length;
+  const p2Cnt = stocks.filter((s) => s.analysis?.phase === 2).length;
+  const dipCnt = stocks.filter((s) => s.intradayChangePct <= -2.0 || s.dipFromSwingHighPct <= -3.8).length;
+
+  document.getElementById('cntAll').textContent = `(${stocks.length})`;
+  document.getElementById('cntP4').textContent = p4Cnt ? `(${p4Cnt})` : '';
+  document.getElementById('cntP3').textContent = p3Cnt ? `(${p3Cnt})` : '';
+  document.getElementById('cntP2').textContent = p2Cnt ? `(${p2Cnt})` : '';
+  document.getElementById('cntDips').textContent = dipCnt ? `(${dipCnt})` : '';
 
   const filtered = stocks.filter((s) => {
     const phase = s.analysis?.phase ?? 0;
     if (state.activeFilter === 'phase4' && phase !== 4) return false;
     if (state.activeFilter === 'phase3' && phase !== 3) return false;
     if (state.activeFilter === 'phase2' && phase !== 2) return false;
-    if (state.activeFilter === 'dips' && (s.intradayChangePct > -2.0 && s.dipFromSwingHighPct > -3.5)) return false;
+    if (state.activeFilter === 'dips' && s.intradayChangePct > -2.0 && s.dipFromSwingHighPct > -3.8) return false;
+
+    if (state.activeRegion === 'DAX' && !['DAX', 'MDAX'].includes(s.index)) return false;
+    if (state.activeRegion === 'ATX' && !['ATX', 'SMI', 'EUROSTOXX'].includes(s.index)) return false;
+    if (state.activeRegion === 'US' && s.region !== 'US') return false;
 
     if (state.searchQuery) {
       const hay = `${s.symbol} ${s.name} ${s.indexName} ${s.sector}`.toLowerCase();
@@ -280,9 +602,9 @@ function renderStockList() {
   });
 
   if (filtered.length === 0) {
-    container.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">
-      Keine Aktien für diesen Filter gefunden.<br/>
-      Tipp: Klicke oben rechts auf <b>„⚡ Fallstudie (Kap. 08) & Alarm testen“</b>, um ein komplettes Phase-4-Setup live zu sehen!
+    container.innerHTML = `<div style="padding:24px 14px;text-align:center;color:#64748b;font-size:12px;">
+      Keine Aktie in diesem Filter.<br/><br/>
+      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b>, um ein komplettes Phase-4-Setup live zu simulieren!
     </div>`;
     return;
   }
@@ -291,33 +613,45 @@ function renderStockList() {
     .map((s) => {
       const p = s.analysis?.phase ?? 0;
       const isSelected = s.symbol === state.selectedSymbol;
-      const pillClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
-      const itemPhaseClass = p >= 2 ? `phase-${p}` : '';
+      const tagClass = p === 4 ? 'p4' : p === 3 ? 'p3' : p === 2 ? 'p2' : p === 1 ? 'p1' : 'p0';
+      const cardPhase = p >= 2 ? `phase-${p}` : '';
       const chg = Number(s.intradayChangePct || 0);
-      const chgColor = chg >= 0 ? '#34d399' : '#f87171';
-      const confCount = s.analysis?.confluenceCount || 0;
-      const lodText = s.analysis?.lodPrice ? `LoD: ${s.analysis.lodPrice.toFixed(2)}` : '';
+      const chgCls = chg >= 0 ? 'pos' : 'neg';
+      const conf = s.analysis?.confluenceCount || 0;
+      const lod = s.analysis?.lodPrice ? s.analysis.lodPrice.toFixed(2) : '--';
+      const pe = s.fundamentals?.peValue ? `KGV ${s.fundamentals.peValue}x` : '';
 
-      return `<div class="stock-item ${itemPhaseClass} ${isSelected ? 'selected' : ''}" data-symbol="${escapeHtml(s.symbol)}">
-        <div class="stock-row-top">
-          <div class="stock-name-wrap">
-            <span class="stock-sym">${escapeHtml(s.symbol)}</span>
-            <span class="stock-nm" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+      const dotsHtml = [0, 1, 2, 3]
+        .map((i) => `<span class="conf-dot ${i < conf ? 'on' : ''}"></span>`)
+        .join('');
+
+      return `<div class="stock-card ${cardPhase} ${isSelected ? 'selected' : ''}" data-symbol="${escapeHtml(s.symbol)}">
+        <div class="sc-top">
+          <div class="sc-ident">
+            <div class="sc-sym-row">
+              <span class="sc-sym">${escapeHtml(s.symbol)}</span>
+              <span class="sc-idx">${escapeHtml(s.indexName)}</span>
+            </div>
+            <span class="sc-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
           </div>
-          <div class="stock-price-wrap">
-            <span>${Number(s.price || 0).toFixed(2)} ${escapeHtml(s.currency)}</span>
-            <span style="color:${chgColor};margin-left:5px;font-size:11px;">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>
+          <div class="sc-price-col">
+            <div class="sc-price">${Number(s.price || 0).toFixed(2)} ${escapeHtml(s.currency)}</div>
+            <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% <span style="color:#64748b;font-weight:400">(${Number(s.dipFromSwingHighPct || 0).toFixed(1)}% 20T)</span></div>
           </div>
         </div>
-        <div class="stock-row-bottom">
-          <span class="phase-pill ${pillClass}">${escapeHtml(s.analysis?.phaseBadge || 'NEUTRAL')}</span>
-          <span class="muted">${lodText} · Konfluenz: <b>${confCount}/4</b></span>
+        <div class="sc-bottom">
+          <span class="phase-tag ${tagClass}">${escapeHtml(s.analysis?.phaseBadge || 'NEUTRAL')}</span>
+          <div class="sc-meta">
+            <span>LoD ${lod}</span>
+            ${pe ? `<span>· ${pe}</span>` : ''}
+            <span class="conf-dots" title="${conf}/4 Konfluenz-Signale">${dotsHtml}</span>
+          </div>
         </div>
       </div>`;
     })
     .join('');
 
-  container.querySelectorAll('.stock-item').forEach((el) => {
+  container.querySelectorAll('.stock-card').forEach((el) => {
     el.addEventListener('click', () => {
       const sym = el.getAttribute('data-symbol');
       state.selectedSymbol = sym;
@@ -327,7 +661,7 @@ function renderStockList() {
   });
 }
 
-// --- MITTLERE SPALTE: AUSGEWÄHLTE AKTIE, M10-CHART, 4 PHASEN, KONFLUENZ & CHECKLISTE ---
+// --- MAIN STAGE: HERO DETAILS, 4-PHASEN-STEPPER & M10 CHART ---
 
 async function loadChartForSymbol(symbol, forceRefresh = false) {
   try {
@@ -340,7 +674,7 @@ async function loadChartForSymbol(symbol, forceRefresh = false) {
     }
     if (Array.isArray(data.m10Bars)) {
       state.chartBars = data.m10Bars;
-      renderM10CanvasChart();
+      updateTradingViewChartData();
     }
   } catch (err) {
     console.error('Chart-Ladefehler:', err);
@@ -356,28 +690,36 @@ function renderSelectedStockDetails(rec) {
 
   const mhEl = document.getElementById('detailMarketHours');
   mhEl.textContent = rec.marketClock?.reason || 'Handelszeit';
-  mhEl.className = `market-hours-chip ${rec.marketClock?.isOpen ? 'open' : 'closed'}`;
+  mhEl.className = `mkt-badge ${rec.marketClock?.isOpen ? 'open' : 'closed'}`;
 
   const f = rec.fundamentals || {};
   document.getElementById('detailFundamentalSummary').innerHTML =
-    `<b>Bewertung:</b> ${escapeHtml(f.peReason || '-')} &nbsp;|&nbsp; <b>Katalysator/Dip:</b> ${escapeHtml(f.dipReason || '-')} &nbsp;|&nbsp; <b>Earnings-Filter:</b> ${escapeHtml(f.earningsNote || '-')}`;
+    `<b>Bewertung:</b> ${escapeHtml(f.peReason || '-')} &nbsp;·&nbsp; <b>Dip-Analyse:</b> ${escapeHtml(f.dipReason || '-')} &nbsp;·&nbsp; <b>Schutzfilter:</b> ${escapeHtml(f.earningsNote || '-')}`;
 
   document.getElementById('detailCurrentPrice').textContent = `${Number(rec.price || 0).toFixed(2)} ${cur}`;
 
   const chgEl = document.getElementById('detailIntradayChange');
   const chg = Number(rec.intradayChangePct || 0);
   chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% heute`;
-  chgEl.className = `change-pill ${chg >= 0 ? 'pos' : 'neg'}`;
+  chgEl.className = `delta-pill ${chg >= 0 ? 'pos' : 'neg'}`;
 
   const swingEl = document.getElementById('detailSwingDip');
   const sw = Number(rec.dipFromSwingHighPct || 0);
-  swingEl.textContent = `${sw.toFixed(1)}% v. Swing-Hoch`;
+  swingEl.textContent = `${sw.toFixed(1)}% v. 20T-Hoch`;
 
-  // 4-Phasen-Stepper aktualisieren
-  const phase = rec.analysis?.phase ?? 0;
-  document.querySelectorAll('#phaseStepper .phase-step').forEach((stepEl) => {
+  // Hero Mini-KPIs
+  const a = rec.analysis || {};
+  const s = rec.sizing || {};
+  document.getElementById('heroKpiLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} ${cur}` : '--';
+  document.getElementById('heroKpiSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} ${cur}` : '--';
+  document.getElementById('heroKpiLev').textContent = `${s.activeLeverage || 8}x`;
+  document.getElementById('heroKpiBuy').textContent = s.positionSizeEuro ? `${s.positionSizeEuro.toFixed(0)} €` : '--';
+
+  // 4-Phasen-Stepper
+  const phase = a.phase ?? 0;
+  document.querySelectorAll('#phaseStepper .pipe-step').forEach((stepEl) => {
     const sNum = Number(stepEl.getAttribute('data-step'));
-    stepEl.className = 'phase-step';
+    stepEl.className = 'pipe-step';
     if (phase > sNum) {
       stepEl.classList.add('passed');
     } else if (phase === sNum) {
@@ -386,32 +728,29 @@ function renderSelectedStockDetails(rec) {
   });
 
   const actionBox = document.getElementById('phaseActionBox');
-  actionBox.innerHTML = `<strong>${escapeHtml(rec.analysis?.phaseName || '')}:</strong> ${escapeHtml(rec.analysis?.actionText || '')}`;
+  actionBox.innerHTML = `<strong>${escapeHtml(a.phaseName || '')}:</strong> ${escapeHtml(a.actionText || '')}`;
   actionBox.style.borderLeftColor =
     phase === 4 ? '#10b981' : phase === 3 ? '#f59e0b' : phase === 2 ? '#38bdf8' : phase === 1 ? '#ef4444' : '#64748b';
 
-  // Chart-Legende aktualisieren
-  const a = rec.analysis || {};
-  document.getElementById('legEma20').textContent = a.ema20 ? `${a.ema20.toFixed(2)}` : '-';
-  document.getElementById('legVwap').textContent = a.vwap ? `${a.vwap.toFixed(2)}` : '-';
-  document.getElementById('legLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} ${cur}` : '-';
-  document.getElementById('legSl').textContent = rec.sizing?.stopLossStock
-    ? `${rec.sizing.stopLossStock.toFixed(2)} ${cur}`
-    : '-';
-  document.getElementById('legRsi').textContent = a.rsi14 ? `${a.rsi14.toFixed(1)}` : '-';
+  // Chart-Legende
+  document.getElementById('legEma20').textContent = a.ema20 ? a.ema20.toFixed(2) : '--';
+  document.getElementById('legVwap').textContent = a.vwap ? a.vwap.toFixed(2) : '--';
+  document.getElementById('legLod').textContent = a.lodPrice ? `${a.lodPrice.toFixed(2)} ${cur}` : '--';
+  document.getElementById('legSl').textContent = s.stopLossStock ? `${s.stopLossStock.toFixed(2)} ${cur}` : '--';
+  document.getElementById('legRsi').textContent = a.rsi14 ? a.rsi14.toFixed(1) : '--';
 
-  // 4 Objektive Konfluenz-Signale rendern
+  // 4 Konfluenz-Signale
   const confSignals = a.confluenceSignals || [];
   const confCount = a.confluenceCount || 0;
   const confBadge = document.getElementById('confluenceScoreBadge');
-  confBadge.textContent = `${confCount} / 4 aktiv`;
+  confBadge.textContent = `${confCount} / 4 Konfluenz`;
   confBadge.style.color = confCount >= 2 ? '#34d399' : '#94a3b8';
 
   document.getElementById('confluenceList').innerHTML = confSignals
     .map((c) => {
-      return `<div class="conf-item ${c.active ? 'active' : ''}">
-        <span class="conf-icon">${c.active ? '✅' : '⚪'}</span>
-        <div class="conf-body">
+      return `<div class="conf-box ${c.active ? 'active' : ''}">
+        <span>${c.active ? '✅' : '⚪'}</span>
+        <div>
           <strong>${escapeHtml(c.name)}</strong>
           <span>${escapeHtml(c.detail || '')}</span>
         </div>
@@ -419,7 +758,7 @@ function renderSelectedStockDetails(rec) {
     })
     .join('');
 
-  // 9-Punkte Pre-Trade-Checkliste rendern (Kapitel 09)
+  // 9-Punkte Pre-Trade-Checkliste
   const checklist = rec.checklist || [];
   const passedCount = checklist.filter((c) => c.passed).length;
   const chkBadge = document.getElementById('checklistScoreBadge');
@@ -428,9 +767,9 @@ function renderSelectedStockDetails(rec) {
 
   document.getElementById('preTradeChecklist').innerHTML = checklist
     .map((item) => {
-      return `<div class="chk-item ${item.passed ? 'passed' : ''}">
-        <span class="conf-icon">${item.passed ? '☑️' : '⬜'}</span>
-        <div class="chk-body">
+      return `<div class="chk-row ${item.passed ? 'passed' : ''}">
+        <span>${item.passed ? '☑️' : '⬜'}</span>
+        <div>
           <strong>${escapeHtml(item.nr)}. ${escapeHtml(item.title)}</strong>
           <span>${escapeHtml(item.detail || item.requirement)}</span>
         </div>
@@ -439,263 +778,7 @@ function renderSelectedStockDetails(rec) {
     .join('');
 }
 
-// --- INTERAKTIVER HTML5 CANVAS 10-MINUTEN-CHART (M10 + EMA20 + VWAP + LOD + SL + RSI14) ---
-
-function renderM10CanvasChart() {
-  const canvas = document.getElementById('m10ChartCanvas');
-  if (!canvas) return;
-  const rect = canvas.parentElement.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(rect.height * dpr);
-
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  const width = rect.width;
-  const height = rect.height;
-
-  ctx.fillStyle = '#0b101d';
-  ctx.fillRect(0, 0, width, height);
-
-  const bars = state.chartBars.slice(-55);
-  if (!bars || bars.length === 0) {
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Lade 10-Minuten-Kerzen (M10)...', width / 2, height / 2);
-    return;
-  }
-
-  const padLeft = 12;
-  const padRight = 64;
-  const padTop = 14;
-  const priceAreaH = Math.floor(height * 0.70);
-  const rsiTop = padTop + priceAreaH + 14;
-  const rsiAreaH = height - rsiTop - 22;
-  const plotW = width - padLeft - padRight;
-
-  const rec = state.chartRecord;
-  const lodPrice = rec?.analysis?.lodPrice ?? null;
-  const slPrice = rec?.sizing?.stopLossStock ?? null;
-
-  let minP = Math.min(...bars.map((b) => b.low));
-  let maxP = Math.max(...bars.map((b) => b.high));
-  if (lodPrice && lodPrice < minP) minP = lodPrice;
-  if (slPrice && slPrice < minP && (minP - slPrice) / minP < 0.04) minP = slPrice;
-
-  const pSpan = Math.max(0.01, maxP - minP);
-  minP -= pSpan * 0.06;
-  maxP += pSpan * 0.06;
-
-  const priceToY = (p) => padTop + priceAreaH - ((p - minP) / (maxP - minP)) * priceAreaH;
-  const rsiToY = (r) => rsiTop + rsiAreaH - (Math.min(100, Math.max(0, r)) / 100) * rsiAreaH;
-
-  // Preis-Gitternetz
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.1)';
-  ctx.lineWidth = 1;
-  ctx.fillStyle = '#94a3b8';
-  ctx.font = '10.5px sans-serif';
-  ctx.textAlign = 'left';
-
-  for (let i = 0; i <= 4; i++) {
-    const pVal = minP + ((maxP - minP) * i) / 4;
-    const y = priceToY(pVal);
-    ctx.beginPath();
-    ctx.moveTo(padLeft, y);
-    ctx.lineTo(padLeft + plotW, y);
-    ctx.stroke();
-    ctx.fillText(pVal.toFixed(2), padLeft + plotW + 6, y + 3);
-  }
-
-  const stepX = plotW / bars.length;
-  const candleW = Math.max(3, Math.min(14, stepX * 0.68));
-  const maxVol = Math.max(...bars.map((b) => b.volume || 1), 1);
-
-  // Volumen-Balken im unteren Teil des Preis-Charts
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const x = padLeft + i * stepX + stepX / 2;
-    const volH = ((b.volume || 0) / maxVol) * (priceAreaH * 0.22);
-    ctx.fillStyle = b.close >= b.open ? 'rgba(16, 185, 129, 0.16)' : 'rgba(239, 68, 68, 0.16)';
-    ctx.fillRect(x - candleW / 2, padTop + priceAreaH - volH, candleW, volH);
-  }
-
-  // Tagestief (LoD) Referenzlinie (Gelb gestrichelt)
-  if (lodPrice && lodPrice >= minP && lodPrice <= maxP) {
-    const yLod = priceToY(lodPrice);
-    ctx.save();
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    ctx.moveTo(padLeft, yLod);
-    ctx.lineTo(padLeft + plotW, yLod);
-    ctx.stroke();
-    ctx.fillStyle = '#fbbf24';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.fillText(`LoD ${lodPrice.toFixed(2)}`, padLeft + 6, yLod - 4);
-    ctx.restore();
-  }
-
-  // Struktureller Stop-Loss (inkl. Puffer) Referenzlinie (Rot gepunktet)
-  if (slPrice && slPrice >= minP && slPrice <= maxP) {
-    const ySl = priceToY(slPrice);
-    ctx.save();
-    ctx.strokeStyle = '#ef4444';
-    ctx.lineWidth = 1.3;
-    ctx.setLineDash([2, 3]);
-    ctx.beginPath();
-    ctx.moveTo(padLeft, ySl);
-    ctx.lineTo(padLeft + plotW, ySl);
-    ctx.stroke();
-    ctx.fillStyle = '#f87171';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.fillText(`SL ${slPrice.toFixed(2)}`, padLeft + 85, ySl - 4);
-    ctx.restore();
-  }
-
-  // Intraday-VWAP Linie (Lila)
-  ctx.strokeStyle = '#a855f7';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  bars.forEach((b, i) => {
-    const x = padLeft + i * stepX + stepX / 2;
-    const y = priceToY(b.vwap || b.close);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // M10 EMA 20 Linie (Hellblau)
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  bars.forEach((b, i) => {
-    const x = padLeft + i * stepX + stepX / 2;
-    const y = priceToY(b.ema20 || b.close);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // M10 Kerzen (Candlesticks)
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    const x = padLeft + i * stepX + stepX / 2;
-    const isGreen = b.close >= b.open;
-    const color = isGreen ? '#10b981' : '#ef4444';
-
-    const yHigh = priceToY(b.high);
-    const yLow = priceToY(b.low);
-    const yOpen = priceToY(b.open);
-    const yClose = priceToY(b.close);
-
-    // Docht
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(x, yHigh);
-    ctx.lineTo(x, yLow);
-    ctx.stroke();
-
-    // Körper
-    const bodyTop = Math.min(yOpen, yClose);
-    const bodyH = Math.max(2, Math.abs(yClose - yOpen));
-    ctx.fillStyle = color;
-    ctx.fillRect(x - candleW / 2, bodyTop, candleW, bodyH);
-  }
-
-  // --- RSI(14) SUB-CHART UNTEN ---
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
-  ctx.beginPath();
-  ctx.moveTo(padLeft, rsiTop);
-  ctx.lineTo(padLeft + plotW, rsiTop);
-  ctx.stroke();
-
-  // RSI 30 & 70 Hilfslinien
-  [30, 70].forEach((lvl) => {
-    const y = rsiToY(lvl);
-    ctx.save();
-    ctx.strokeStyle = lvl === 30 ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.25)';
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(padLeft, y);
-    ctx.lineTo(padLeft + plotW, y);
-    ctx.stroke();
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '9.5px sans-serif';
-    ctx.fillText(`RSI ${lvl}`, padLeft + plotW + 6, y + 3);
-    ctx.restore();
-  });
-
-  // RSI(14) Kurve
-  ctx.strokeStyle = '#34d399';
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  bars.forEach((b, i) => {
-    const x = padLeft + i * stepX + stepX / 2;
-    const y = rsiToY(b.rsi14 ?? 50);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Zeitachse unten
-  ctx.fillStyle = '#64748b';
-  ctx.font = '10px sans-serif';
-  ctx.textAlign = 'center';
-  const labelStep = Math.max(1, Math.floor(bars.length / 6));
-  for (let i = 0; i < bars.length; i += labelStep) {
-    const b = bars[i];
-    const x = padLeft + i * stepX + stepX / 2;
-    const tStr = new Date(b.time * 1000).toLocaleTimeString('de-DE', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-    ctx.fillText(tStr, x, height - 5);
-  }
-
-  // Fadenkreuz bei Hover
-  if (state.hoverBarIndex !== null && bars[state.hoverBarIndex]) {
-    const hx = padLeft + state.hoverBarIndex * stepX + stepX / 2;
-    ctx.save();
-    ctx.strokeStyle = 'rgba(241, 245, 249, 0.35)';
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(hx, padTop);
-    ctx.lineTo(hx, height - 18);
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
-function handleCanvasMouseMove(e) {
-  const canvas = document.getElementById('m10ChartCanvas');
-  const bars = state.chartBars.slice(-55);
-  if (!bars.length) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const padLeft = 12;
-  const padRight = 64;
-  const plotW = rect.width - padLeft - padRight;
-  if (mx < padLeft || mx > padLeft + plotW) return;
-
-  const idx = Math.min(bars.length - 1, Math.max(0, Math.floor(((mx - padLeft) / plotW) * bars.length)));
-  state.hoverBarIndex = idx;
-  const b = bars[idx];
-
-  const tooltip = document.getElementById('chartTooltip');
-  const timeStr = new Date(b.time * 1000).toLocaleTimeString('de-DE', {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-  tooltip.innerHTML = `<b>${timeStr} Uhr (M10)</b> · O: ${b.open.toFixed(2)} · H: ${b.high.toFixed(2)} · L: ${b.low.toFixed(2)} · <b>C: ${b.close.toFixed(2)}</b> · EMA20: ${(b.ema20 || 0).toFixed(2)} · VWAP: ${(b.vwap || 0).toFixed(2)} · RSI(14): ${(b.rsi14 || 0).toFixed(1)} · Vol: ${b.volume}`;
-  tooltip.classList.remove('hidden');
-  renderM10CanvasChart();
-}
-
-// --- RECHTE SPALTE: 5%-RISIKO & KNOCK-OUT DERIVATE-RECHNER (KAP. 04 & 05) ---
+// --- 5%-RISIKO & DERIVATE-RECHNER (HEBEL 5x-10x) ---
 
 function syncCalculatorWithRecord(rec) {
   if (!rec || !rec.sizing) return;
@@ -740,7 +823,7 @@ async function recalculateSizingFromInputs() {
     if (data.sizing) {
       if (state.chartRecord) state.chartRecord.sizing = data.sizing;
       renderSizingOutput(data.sizing, state.chartRecord?.currency || '€');
-      renderM10CanvasChart();
+      updateTradingViewChartData();
     }
   } catch (err) {
     console.error('Rechenfehler:', err);
@@ -749,41 +832,40 @@ async function recalculateSizingFromInputs() {
 
 function renderSizingOutput(sizing, cur = '€') {
   if (!sizing) return;
+  document.getElementById('heroKpiSl').textContent = `${sizing.stopLossStock.toFixed(2)} ${cur}`;
+  document.getElementById('heroKpiLev').textContent = `${sizing.activeLeverage}x`;
+  document.getElementById('heroKpiBuy').textContent = `${sizing.positionSizeEuro.toFixed(0)} €`;
+
   const box = document.getElementById('calcResultsBox');
   box.innerHTML = `
-    <div class="calc-step-row">
+    <div class="calc-row">
       <span>1. Max. erlaubter Verlust (R_max = ${sizing.maxRiskPct}%):</span>
-      <strong style="color:#f87171">-${sizing.rMaxEuro.toFixed(2)} €</strong>
+      <strong class="text-red">-${sizing.rMaxEuro.toFixed(2)} €</strong>
     </div>
-    <div class="calc-step-row">
-      <span>2. Stop-Loss Aktie (LoD - ${sizing.noiseBufferPct}% Puffer):</span>
+    <div class="calc-row">
+      <span>2. Struktureller Stop-Loss Aktie (LoD - ${sizing.noiseBufferPct}%):</span>
       <strong>${sizing.stopLossStock.toFixed(2)} ${cur} (-${sizing.stopDistanceStockPct.toFixed(2)}%)</strong>
     </div>
-    <div class="calc-step-row">
-      <span>3. Empfohlener / Aktiver Hebel (Kap. 4.2):</span>
-      <strong style="color:#38bdf8">Hebel ${sizing.activeLeverage}x Turbo Long</strong>
+    <div class="calc-row">
+      <span>3. Kalibrierter Hebel &amp; Risiko im Derivat:</span>
+      <strong class="text-cyan">Hebel ${sizing.activeLeverage}x → -${sizing.dDerivatPct.toFixed(2)}% bis SL</strong>
     </div>
-    <div class="calc-step-row">
-      <span>4. Stop-Loss-Abstand im Derivat (d_Derivat):</span>
-      <strong style="color:#fbbf24">-${sizing.dDerivatPct.toFixed(2)}%</strong>
+    <div class="calc-row">
+      <span>4. Max. erlaubte K.O.-Barriere (Kap. 4.3):</span>
+      <strong>&lt; ${sizing.maxAllowedKoBarrier.toFixed(2)} ${cur} (Strike ~${sizing.impliedStrike.toFixed(2)})</strong>
     </div>
-    <div class="calc-step-row">
-      <span>5. Max. erlaubte K.O.-Barriere (Kap. 4.3):</span>
-      <span>&lt; ${sizing.maxAllowedKoBarrier.toFixed(2)} ${cur} (Strike ~${sizing.impliedStrike.toFixed(2)})</span>
-    </div>
-    <div class="calc-highlight">
+    <div class="calc-buy-banner">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <span>📌 <b>Kaufbetrag Derivat (P_Kauf):</b></span>
-        <strong style="font-size:15px;color:#34d399">${sizing.positionSizeEuro.toFixed(0)} € (${sizing.accountAllocationPct.toFixed(1)}% Konto)</strong>
+        <strong style="font-family:var(--font-mono);font-size:15px;color:#34d399">${sizing.positionSizeEuro.toFixed(0)} € (${sizing.accountAllocationPct.toFixed(1)}% Konto)</strong>
       </div>
       <div style="font-size:11px;color:#cbd5e1;margin-top:4px;">
-        Modell-Order: <b>${sizing.quantityPieces} Stück</b> à ${sizing.modelCertEntryPrice.toFixed(2)} € kaufen →
-        <b>Stop-Loss im Derivat direkt bei ${sizing.modelCertStopPrice.toFixed(2)} €</b> setzen (Max. Risiko: -${sizing.actualRiskEuro.toFixed(0)} €)
+        Order: <b>${sizing.quantityPieces} Stück</b> à ${sizing.modelCertEntryPrice.toFixed(2)} € →
+        <b>Stop-Loss im Derivat direkt bei ${sizing.modelCertStopPrice.toFixed(2)} €</b> eintragen
       </div>
     </div>
   `;
 
-  // Matrix (Kapitel 5.3)
   const tbody = document.getElementById('calcMatrixBody');
   tbody.innerHTML = (sizing.matrix || [])
     .map((row) => {
@@ -791,14 +873,14 @@ function renderSizingOutput(sizing, cur = '€') {
         <td>${row.leverage}x ${row.isRecommended ? '★' : ''}</td>
         <td>-${row.stopDerivatPct.toFixed(1)}%</td>
         <td>${row.accountSharePct.toFixed(1)}%</td>
-        <td><b>${row.buyAmountEuro.toFixed(0)} €</b></td>
+        <td>${row.buyAmountEuro.toFixed(0)} €</td>
         <td>${row.stopAmountEuro.toFixed(0)} € (-${row.maxLossEuro.toFixed(0)} €)</td>
       </tr>`;
     })
     .join('');
 }
 
-// --- AKTIVE TRADES (STUFE 1-3 & STAGNATIONS-EXIT) & POST-TRADE JOURNAL ---
+// --- AKTIVE TRADES & JOURNAL ---
 
 async function openActiveTradeFromCalculator() {
   const symbol = state.selectedSymbol || 'SY1.DE';
@@ -823,7 +905,7 @@ async function openActiveTradeFromCalculator() {
   const data = await res.json();
   if (data.snapshot) {
     applySnapshot(data.snapshot);
-    document.querySelector('.right-tab[data-rtab="trades"]').click();
+    document.querySelector('.wb-tab[data-wbtab="trades"]').click();
   }
 }
 
@@ -834,31 +916,28 @@ function renderActiveTradesAndJournal() {
 
   const tradesContainer = document.getElementById('activeTradesList');
   if (trades.length === 0) {
-    tradesContainer.innerHTML = `<div class="muted">Keine offenen Positionen in der Live-Überwachung.</div>`;
+    tradesContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Keine offenen Trades in der 3-Stufen-Überwachung.</div>`;
   } else {
     tradesContainer.innerHTML = trades
       .map((t) => {
         const ev = t.latestEvaluation || {};
-        const stage = ev.stage ?? 1;
-        const stageClass = stage === 3 ? 'stage-3' : stage === 2 ? 'stage-2' : '';
         const pnlEuro = Number(ev.pnlEuro || 0);
         const derivPct = Number(ev.derivGainPct || 0);
         const rMult = Number(ev.rMultiple || 0);
         const pnlColor = pnlEuro >= 0 ? '#34d399' : '#f87171';
 
-        return `<div class="trade-card ${stageClass}">
+        return `<div class="trade-item">
           <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong>${escapeHtml(t.name)} (${escapeHtml(t.symbol)}) · Hebel ${t.leverage}x</strong>
-            <span style="color:${pnlColor};font-weight:800;">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} € (${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)}% | ${rMult.toFixed(2)}R)</span>
+            <strong>${escapeHtml(t.name)} (${escapeHtml(t.symbol)}) · ${t.leverage}x</strong>
+            <strong style="font-family:var(--font-mono);color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} € (${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)}% | ${rMult.toFixed(2)}R)</strong>
           </div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:3px;">
-            Entry: ${t.entryPrice.toFixed(2)} · Aktuell: ${(ev.currentPrice || t.entryPrice).toFixed(2)} · Nachgezogener SL: <b>${(ev.recommendedStopStock || t.stopLossStock).toFixed(2)}</b>
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px;font-family:var(--font-mono);">
+            Entry: ${t.entryPrice.toFixed(2)} · Aktuell: ${(ev.currentPrice || t.entryPrice).toFixed(2)} · Empf. SL: <b>${(ev.recommendedStopStock || t.stopLossStock).toFixed(2)}</b>
           </div>
-          <div style="margin-top:6px;padding:5px 7px;background:#0d1424;border-radius:4px;font-size:11px;">
-            <b>${escapeHtml(ev.stageName || 'Stufe 1: Initial Risk')}:</b><br/>
-            ${escapeHtml(ev.recommendation || 'Stop unter LoD belassen.')}
+          <div style="margin-top:6px;padding:6px 8px;background:#070b14;border-radius:6px;font-size:11px;">
+            <b>${escapeHtml(ev.stageName || 'Stufe 1: Initial Risk')}:</b> ${escapeHtml(ev.recommendation || 'Stop unter LoD belassen.')}
           </div>
-          <div style="margin-top:7px;display:flex;justify-content:flex-end;">
+          <div style="margin-top:8px;display:flex;justify-content:flex-end;">
             <button class="btn btn-xs btn-secondary btn-close-trade" data-id="${escapeHtml(t.id)}">
               🏁 Glattstellen &amp; ins Journal buchen
             </button>
@@ -883,19 +962,19 @@ function renderActiveTradesAndJournal() {
 
   const journalContainer = document.getElementById('journalList');
   if (journal.length === 0) {
-    journalContainer.innerHTML = `<div class="muted">Noch keine abgeschlossenen Trades im Journal.</div>`;
+    journalContainer.innerHTML = `<div style="padding:18px;text-align:center;color:#64748b;font-size:12px;">Noch keine abgeschlossenen Trades im Journal.</div>`;
   } else {
     journalContainer.innerHTML = journal
-      .slice(0, 15)
+      .slice(0, 20)
       .map((j) => {
         const win = j.pnlEuro >= 0;
-        return `<div class="journal-card">
+        return `<div class="journal-item">
           <div style="display:flex;justify-content:space-between;">
             <strong>${escapeHtml(j.name)} (${escapeHtml(j.symbol)}) · ${j.leverage}x</strong>
-            <strong style="color:${win ? '#34d399' : '#f87171'}">${win ? '+' : ''}${j.pnlEuro.toFixed(0)} € (${win ? '+' : ''}${j.rMultiple.toFixed(2)}R)</strong>
+            <strong style="font-family:var(--font-mono);color:${win ? '#34d399' : '#f87171'}">${win ? '+' : ''}${j.pnlEuro.toFixed(0)} € (${win ? '+' : ''}${j.rMultiple.toFixed(2)}R)</strong>
           </div>
-          <div class="muted" style="margin-top:3px;">
-            Entry: ${j.entryPrice} → Exit: ${j.exitPrice} (${j.stockGainPct >= 0 ? '+' : ''}${j.stockGainPct}% Aktie | ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct}% Derivat) · LoD: ${j.lodPrice} (SL -${j.stopDistancePct}%)
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px;font-family:var(--font-mono);">
+            Entry ${j.entryPrice} → Exit ${j.exitPrice} (${j.stockGainPct >= 0 ? '+' : ''}${j.stockGainPct}% Aktie | ${j.derivGainPct >= 0 ? '+' : ''}${j.derivGainPct}% Derivat)
           </div>
         </div>`;
       })
@@ -903,7 +982,7 @@ function renderActiveTradesAndJournal() {
   }
 }
 
-// --- ECHTZEIT-BENACHRICHTIGUNGEN (GLEICHZEITIG WEB + TELEGRAM) ---
+// --- ECHTZEIT-BENACHRICHTIGUNGEN (SYNCHRON WEB + TELEGRAM) ---
 
 function handleIncomingLiveAlert(alert) {
   if (!alert) return;
@@ -916,17 +995,15 @@ function handleIncomingLiveAlert(alert) {
     renderAlertsHistory();
   }
 
-  // 1. Live Banner oben im Dashboard einblenden
   const banner = document.getElementById('liveAlertBanner');
   document.getElementById('bannerBadge').textContent = alert.phaseBadge || `PHASE ${alert.phase || 4}`;
   document.getElementById('bannerTitle').textContent = alert.title;
   document.getElementById('bannerSub').textContent = alert.message;
   document.getElementById('bannerDelivery').textContent = alert.delivery?.telegram?.ok
-    ? '✅ Web-Dashboard + Telegram gleichzeitig zugestellt'
+    ? '✅ Web + @PureSiteTrading_bot gleichzeitig zugestellt'
     : '🔔 Web-Dashboard Live-Alarm';
 
-  const viewBtn = document.getElementById('btnBannerView');
-  viewBtn.onclick = () => {
+  document.getElementById('btnBannerView').onclick = () => {
     if (alert.symbol) {
       state.selectedSymbol = alert.symbol;
       loadChartForSymbol(alert.symbol, false);
@@ -934,13 +1011,11 @@ function handleIncomingLiveAlert(alert) {
   };
   banner.classList.remove('hidden');
 
-  // 2. Akustischer Sound-Alarm via WebAudio API
   const settings = state.snapshot?.settings || {};
   if (settings.soundAlertsEnabled !== false) {
     playAlertChime(alert.phase || 4);
   }
 
-  // 3. Browser Desktop-Notification
   if (settings.browserNotificationsEnabled !== false && 'Notification' in window) {
     if (Notification.permission === 'granted') {
       new Notification(alert.title, { body: alert.message });
@@ -959,9 +1034,9 @@ function updateAlertDeliveryInHistory(alertId, delivery) {
     item.delivery = delivery;
     renderAlertsHistory();
   }
-  const bannerDelivery = document.getElementById('bannerDelivery');
   if (delivery?.telegram?.ok) {
-    bannerDelivery.textContent = '✅ Web-Dashboard + Telegram gleichzeitig zugestellt!';
+    document.getElementById('bannerDelivery').textContent =
+      '✅ Web + @PureSiteTrading_bot gleichzeitig zugestellt!';
   }
 }
 
@@ -971,7 +1046,10 @@ function renderAlertsHistory() {
   const container = document.getElementById('alertsHistoryList');
 
   if (list.length === 0) {
-    container.innerHTML = `<div class="muted">Noch keine Alarme in dieser Sitzung ausgelöst. Klicke oben auf <b>„⚡ Fallstudie (Kap. 08) & Alarm testen“</b>!</div>`;
+    container.innerHTML = `<div style="padding:20px;text-align:center;color:#64748b;font-size:12px;">
+      Noch keine Alarme ausgelöst.<br/>
+      Klicke oben rechts auf <b>„⚡ Playbook-Fallstudie (Kap. 08)“</b> oder <b>„🚀 Test-Alarm“</b>!
+    </div>`;
     return;
   }
 
@@ -979,24 +1057,21 @@ function renderAlertsHistory() {
     .map((a) => {
       const timeStr = new Date(a.timestamp).toLocaleTimeString('de-DE');
       const tgOk = a.delivery?.telegram?.ok;
-      const tgSkipped = a.delivery?.telegram?.skipped;
       const tgStatus = tgOk
-        ? `<span style="color:#38bdf8">📲 Telegram ✓</span>`
-        : tgSkipped
-          ? `<span class="muted">Telegram nicht eingerichtet</span>`
-          : `<span style="color:#fbbf24">Telegram: ${escapeHtml(a.delivery?.telegram?.error || 'Sende...')}</span>`;
+        ? `<span class="text-cyan">📲 Telegram ✓</span>`
+        : `<span style="color:#fbbf24">📲 Telegram: Bitte /start im Bot klicken</span>`;
 
-      return `<div class="alert-card" style="cursor:pointer" data-symbol="${escapeHtml(a.symbol || '')}">
-        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">
-          <span class="phase-pill p${a.phase || 4}">${escapeHtml(a.phaseBadge || 'SIGNAL')}</span>
-          <span class="muted">${timeStr} Uhr · 🖥️ Web ✓ · ${tgStatus}</span>
+      return `<div class="alert-item" style="cursor:pointer" data-symbol="${escapeHtml(a.symbol || '')}">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;margin-bottom:4px;">
+          <span class="phase-tag p${a.phase || 4}">${escapeHtml(a.phaseBadge || 'SIGNAL')}</span>
+          <span style="font-family:var(--font-mono);color:#94a3b8">${timeStr} · 🖥️ Web ✓ · ${tgStatus}</span>
         </div>
         <strong style="display:block;font-size:12px;margin-bottom:3px;">${escapeHtml(a.title)}</strong>
         <p style="font-size:11px;color:#cbd5e1;">${escapeHtml(a.message)}</p>
         ${
           a.sizing
-            ? `<div style="margin-top:5px;padding:4px 6px;background:#0d1424;border-radius:4px;font-size:10.5px;color:#34d399;">
-                SL Aktie: ${a.sizing.stopLossStock.toFixed(2)} · Hebel ${a.sizing.activeLeverage}x · Kaufbetrag: <b>${a.sizing.positionSizeEuro.toFixed(0)} €</b> (Max. Risiko: -${a.sizing.rMaxEuro.toFixed(0)} €)
+            ? `<div style="margin-top:6px;padding:5px 8px;background:#070b14;border-radius:5px;font-family:var(--font-mono);font-size:10.5px;color:#34d399;">
+                SL: ${a.sizing.stopLossStock.toFixed(2)} · Hebel ${a.sizing.activeLeverage}x · Kauf: <b>${a.sizing.positionSizeEuro.toFixed(0)} €</b> (Risiko: -${a.sizing.rMaxEuro.toFixed(0)} €)
               </div>`
             : ''
         }
@@ -1004,7 +1079,7 @@ function renderAlertsHistory() {
     })
     .join('');
 
-  container.querySelectorAll('.alert-card').forEach((card) => {
+  container.querySelectorAll('.alert-item').forEach((card) => {
     card.addEventListener('click', () => {
       const sym = card.getAttribute('data-symbol');
       if (sym) {
@@ -1034,11 +1109,11 @@ function playAlertChime(phase = 4) {
       osc.stop(ctx.currentTime + i * 0.11 + 0.3);
     });
   } catch {
-    // Audio blockiert falls noch keine User-Interaktion stattfand
+    // Ignoriere falls Audio vor erster Interaktion
   }
 }
 
-// --- SIMULATION & WATCHLIST HELFER ---
+// --- SIMULATION & WATCHLIST ---
 
 async function runCaseStudySimulation(stage = 'phase4_entry') {
   try {
@@ -1075,11 +1150,12 @@ async function addStockFromInput() {
   }
 }
 
-// --- TELEGRAM & SETTINGS MODAL ---
+// --- SETTINGS MODAL ---
 
 function openSettingsModal() {
   const s = state.snapshot?.settings || {};
-  document.getElementById('setTelegramToken').value = s.telegramBotToken || '';
+  document.getElementById('setTelegramToken').value =
+    s.telegramBotToken || '8545580896:AAH_cLbkPJMpfnhjdo5t5bhh5dde38EWE6I';
   document.getElementById('setTelegramChatId').value = s.telegramChatId || '';
   document.getElementById('setTelegramEnabled').checked = s.telegramEnabled !== false;
   document.getElementById('setAccountCapital').value = s.accountCapital || 10000;
@@ -1121,17 +1197,17 @@ async function saveSettingsFromModal() {
   const data = await res.json();
   if (data.ok && state.snapshot) {
     state.snapshot.settings = data.settings;
-    updateTelegramBadge();
+    updateTelegramStatusUI();
     closeSettingsModal();
     recalculateSizingFromInputs();
   }
 }
 
-async function detectTelegramChatId() {
+async function detectTelegramChatIdInModal() {
   const token = document.getElementById('setTelegramToken').value.trim();
   const fb = document.getElementById('telegramDetectFeedback');
   fb.classList.remove('hidden');
-  fb.textContent = '🔍 Suche nach deiner Telegram Chat-ID...';
+  fb.textContent = '🔍 Suche nach deiner Nachricht an @PureSiteTrading_bot...';
 
   try {
     const res = await fetch('/api/telegram/detect-chat', {
@@ -1143,15 +1219,15 @@ async function detectTelegramChatId() {
     if (data.found) {
       document.getElementById('setTelegramChatId').value = data.chatId;
       fb.style.borderColor = '#10b981';
-      fb.innerHTML = `✅ <b>Chat-ID gefunden:</b> <code>${escapeHtml(data.chatId)}</code> (${escapeHtml(data.chatTitle)}) und automatisch gespeichert!`;
+      fb.innerHTML = `✅ <b>Chat-ID erkannt:</b> <code>${escapeHtml(data.chatId)}</code> (${escapeHtml(data.chatTitle)}) – ab sofort gekoppelt!`;
       if (state.snapshot?.settings) {
         state.snapshot.settings.telegramBotToken = token;
         state.snapshot.settings.telegramChatId = data.chatId;
-        updateTelegramBadge();
+        updateTelegramStatusUI();
       }
     } else {
       fb.style.borderColor = '#f59e0b';
-      fb.textContent = `⚠️ ${data.message || data.error || 'Keine Nachricht gefunden.'}`;
+      fb.innerHTML = `⚠️ Noch keine Nachricht gefunden. Bitte klicke auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und drücke dort auf <b>Starten</b>!`;
     }
   } catch (err) {
     fb.style.borderColor = '#ef4444';
@@ -1178,10 +1254,10 @@ async function triggerTestAlert() {
     const tg = data.alert?.delivery?.telegram;
     if (tg?.ok) {
       fb.style.borderColor = '#10b981';
-      fb.innerHTML = `✅ <b>Gleichzeitiger Test-Alarm erfolgreich an Web-Dashboard UND Telegram (${escapeHtml(tg.chatId)}) gesendet!</b>`;
+      fb.innerHTML = `✅ <b>Test-Alarm gleichzeitig an Web-Dashboard UND @PureSiteTrading_bot (Chat ${escapeHtml(tg.chatId)}) gesendet!</b>`;
     } else {
       fb.style.borderColor = '#f59e0b';
-      fb.innerHTML = `🔔 <b>Web-Dashboard-Alarm ausgelöst!</b> (Telegram-Hinweis: ${escapeHtml(tg?.reason || tg?.error || 'Bitte Bot-Token & Chat-ID eintragen')})`;
+      fb.innerHTML = `🔔 <b>Web-Dashboard-Alarm ausgelöst!</b> Für Telegram: Klicke erst auf <a href="https://t.me/PureSiteTrading_bot?start=connect" target="_blank" style="color:#38bdf8;font-weight:700">@PureSiteTrading_bot öffnen</a> und sende <code>/start</code>.`;
     }
   }
 }

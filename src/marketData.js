@@ -1,12 +1,10 @@
 /**
- * Yahoo Finance Live-Marktdaten-Provider
- * - Ruft in einem Batch-Request alle Fundamental- & Echtzeit-Quotes ab (KGV, EPS, Earnings-Datum, 52W-Hoch, SMA200)
- * - Ruft für relevante Dip-Kandidaten (und die ausgewählte Chart-Aktie) 5-Minuten-Intraday-Kerzen ab,
- *   die von der Strategie-Engine in exakte 10-Minuten-Kerzen (M10) aggregiert werden.
+ * Yahoo Finance Live-Marktdaten-Provider (Bulletproof Edition)
+ * - Ruft in 2 schnellen Batch-Requests alle Quotes & Fundamentaldaten (KGV, EPS, Earnings, 52W-Hoch, SMA200) für alle 51 Aktien & 7 Indizes ab
+ * - Rotiert zwischen query1 und query2 mit sanftem Rate-Limiting für 5-Minuten-Intraday-Kerzen (Resampling auf M10)
  */
 
-const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const USER_AGENT = 'Mozilla/5.0';
 
 export class MarketDataService {
   constructor() {
@@ -16,6 +14,14 @@ export class MarketDataService {
     this.quoteCache = new Map();
     this.intradayCache = new Map(); // symbol -> { fetchedAt, bars, meta }
     this.dailyCache = new Map();    // symbol -> { fetchedAt, bars }
+    this.hostToggle = 0;
+  }
+
+  getNextHost() {
+    this.hostToggle = (this.hostToggle + 1) % 2;
+    return this.hostToggle === 0
+      ? 'https://query1.finance.yahoo.com'
+      : 'https://query2.finance.yahoo.com';
   }
 
   async ensureCrumb() {
@@ -24,8 +30,7 @@ export class MarketDataService {
     }
     try {
       const fc = await fetch('https://fc.yahoo.com', {
-        headers: { 'User-Agent': USER_AGENT },
-        redirect: 'manual'
+        headers: { 'User-Agent': USER_AGENT }
       });
       const rawCookies = fc.headers.getSetCookie
         ? fc.headers.getSetCookie()
@@ -37,15 +42,15 @@ export class MarketDataService {
       });
       if (crumbRes.ok) {
         const crumb = (await crumbRes.text()).trim();
-        if (crumb && !crumb.includes('{')) {
+        if (crumb && !crumb.includes('{') && crumb.length < 40) {
           this.cookieStr = cookieStr;
           this.crumb = crumb;
           this.crumbExpiresAt = Date.now() + 25 * 60 * 1000;
           return { cookieStr, crumb };
         }
       }
-    } catch {
-      // Fallback ohne Crumb über v8/chart
+    } catch (err) {
+      console.error('Crumb Fetch Warnung:', err.message);
     }
     return { cookieStr: null, crumb: null };
   }
@@ -61,11 +66,12 @@ export class MarketDataService {
     if (cookieStr && crumb) {
       try {
         const chunks = [];
-        for (let i = 0; i < symbols.length; i += 35) {
-          chunks.push(symbols.slice(i, i + 35));
+        for (let i = 0; i < symbols.length; i += 30) {
+          chunks.push(symbols.slice(i, i + 30));
         }
         for (const chunk of chunks) {
-          const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(
+          const host = this.getNextHost();
+          const url = `${host}/v7/finance/quote?symbols=${encodeURIComponent(
             chunk.join(',')
           )}&crumb=${encodeURIComponent(crumb)}`;
           const res = await fetch(url, {
@@ -77,14 +83,14 @@ export class MarketDataService {
             for (const q of list) {
               const normalized = {
                 symbol: q.symbol,
-                shortName: q.shortName || q.longName || q.symbol,
-                regularMarketPrice: q.regularMarketPrice,
-                regularMarketPreviousClose: q.regularMarketPreviousClose,
-                regularMarketOpen: q.regularMarketOpen,
-                regularMarketDayHigh: q.regularMarketDayHigh,
-                regularMarketDayLow: q.regularMarketDayLow,
-                regularMarketChangePercent: q.regularMarketChangePercent,
-                regularMarketVolume: q.regularMarketVolume,
+                shortName: (q.shortName || q.longName || q.symbol).replace(/\s+/g, ' ').trim(),
+                regularMarketPrice: q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? 0,
+                regularMarketPreviousClose: q.regularMarketPreviousClose ?? q.chartPreviousClose ?? 0,
+                regularMarketOpen: q.regularMarketOpen ?? q.regularMarketPrice ?? 0,
+                regularMarketDayHigh: q.regularMarketDayHigh ?? q.regularMarketPrice ?? 0,
+                regularMarketDayLow: q.regularMarketDayLow ?? q.regularMarketPrice ?? 0,
+                regularMarketChangePercent: q.regularMarketChangePercent ?? 0,
+                regularMarketVolume: q.regularMarketVolume ?? 0,
                 trailingPE: q.trailingPE ?? null,
                 forwardPE: q.forwardPE ?? null,
                 epsTrailingTwelveMonths: q.epsTrailingTwelveMonths ?? null,
@@ -102,8 +108,15 @@ export class MarketDataService {
             }
           }
         }
-      } catch {
-        // Fallback erfolgt pro Symbol
+      } catch (err) {
+        console.error('BatchQuote Warnung:', err.message);
+      }
+    }
+
+    // Fallback auf gecachte Quotes falls einzelne fehlen
+    for (const sym of symbols) {
+      if (!resultMap.has(sym) && this.quoteCache.has(sym)) {
+        resultMap.set(sym, this.quoteCache.get(sym));
       }
     }
 
@@ -115,17 +128,20 @@ export class MarketDataService {
    */
   async fetchIntraday5m(symbol, { forceRefresh = false } = {}) {
     const cached = this.intradayCache.get(symbol);
-    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < 35 * 1000) {
+    // Cache für 90 Sekunden wiederverwenden, außer explizit forceRefresh
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < 90 * 1000) {
       return cached;
     }
 
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+    const host = this.getNextHost();
+    const url = `${host}/v8/finance/chart/${encodeURIComponent(
       symbol
     )}?interval=5m&range=5d&includePrePost=false`;
 
-    const res = await fetch(url, {
-      headers: { 'User-Agent': USER_AGENT }
-    });
+    const headers = { 'User-Agent': USER_AGENT };
+    if (this.cookieStr) headers.Cookie = this.cookieStr;
+
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       if (cached) return cached;
       throw new Error(`Yahoo Chart API HTTP ${res.status} für ${symbol}`);
@@ -181,15 +197,19 @@ export class MarketDataService {
    */
   async fetchDailyBars(symbol) {
     const cached = this.dailyCache.get(symbol);
-    if (cached && Date.now() - cached.fetchedAt < 15 * 60 * 1000) {
+    if (cached && Date.now() - cached.fetchedAt < 30 * 60 * 1000) {
       return cached.bars;
     }
 
     try {
-      const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+      const host = this.getNextHost();
+      const url = `${host}/v8/finance/chart/${encodeURIComponent(
         symbol
       )}?interval=1d&range=6mo`;
-      const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+      const headers = { 'User-Agent': USER_AGENT };
+      if (this.cookieStr) headers.Cookie = this.cookieStr;
+
+      const res = await fetch(url, { headers });
       if (!res.ok) return cached?.bars || [];
       const data = await res.json();
       const result = data?.chart?.result?.[0];

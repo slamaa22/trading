@@ -20,17 +20,21 @@ import {
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
+const DEFAULT_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN || '8545580896:AAH_cLbkPJMpfnhjdo5t5bhh5dde38EWE6I';
+
 const DEFAULT_SETTINGS = {
   accountCapital: 10000,
   maxRiskPct: 5.0,
   noiseBufferPct: 0.20,
-  minDipPct: -2.0,          // Intraday-Dip-Schwelle (oder -3.8% vom 20-Tage-Swing-Hoch)
-  minAlertPhase: 2,         // 2 = Ab Phase 2 (Watchlist-Alarm) + Phase 3 + Phase 4 benachrichtigen
-  scanIntervalSec: 60,      // Alle 60 Sekunden automatischer Scan
+  minDipPct: -2.0,
+  minAlertPhase: 2,
+  scanIntervalSec: 60,
   soundAlertsEnabled: true,
   browserNotificationsEnabled: true,
   telegramEnabled: true,
-  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  telegramBotToken: DEFAULT_BOT_TOKEN,
+  telegramBotUsername: 'PureSiteTrading_bot',
   telegramChatId: process.env.TELEGRAM_CHAT_ID || ''
 };
 
@@ -46,8 +50,8 @@ export class StrategyScanner {
     this.scanTimer = null;
 
     this.indexRegimes = {};
-    this.stockResults = new Map(); // symbol -> full analysis snapshot
-    this.m10Store = new Map();     // symbol -> enriched M10 bars
+    this.stockResults = new Map();
+    this.m10Store = new Map();
   }
 
   loadState() {
@@ -57,15 +61,20 @@ export class StrategyScanner {
       }
       if (fs.existsSync(STATE_FILE)) {
         const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+        const mergedSettings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
+        if (!mergedSettings.telegramBotToken) {
+          mergedSettings.telegramBotToken = DEFAULT_BOT_TOKEN;
+        }
+        mergedSettings.telegramBotUsername = 'PureSiteTrading_bot';
         return {
-          settings: { ...DEFAULT_SETTINGS, ...(raw.settings || {}) },
+          settings: mergedSettings,
           customStocks: Array.isArray(raw.customStocks) ? raw.customStocks : [],
           activeTrades: Array.isArray(raw.activeTrades) ? raw.activeTrades : [],
           journal: Array.isArray(raw.journal) ? raw.journal : []
         };
       }
     } catch {
-      // Fallback auf Default
+      // Fallback
     }
     return {
       settings: { ...DEFAULT_SETTINGS },
@@ -95,6 +104,9 @@ export class StrategyScanner {
       ...this.state.settings,
       ...partial
     };
+    if (!this.state.settings.telegramBotToken) {
+      this.state.settings.telegramBotToken = DEFAULT_BOT_TOKEN;
+    }
     this.saveState();
     this.restartAutoScan();
     return this.state.settings;
@@ -114,7 +126,7 @@ export class StrategyScanner {
       symbol,
       name: stock.name || symbol,
       index: stock.index || (symbol.includes('.') ? 'DAX' : 'SP500'),
-      sector: stock.sector || 'Individuell',
+      sector: stock.sector || 'Watchlist',
       profile: stock.profile || 'conservative',
       currency: stock.currency || (symbol.endsWith('.SW') ? 'CHF' : symbol.includes('.') ? 'EUR' : 'USD'),
       isCustom: true
@@ -136,7 +148,6 @@ export class StrategyScanner {
 
   startAutoScan() {
     this.restartAutoScan();
-    // Direkt ersten Scan anstoßen
     this.runFullScan({ reason: 'initial' }).catch((err) => {
       console.error('Initialer Scan-Fehler:', err.message);
     });
@@ -144,7 +155,7 @@ export class StrategyScanner {
 
   restartAutoScan() {
     if (this.scanTimer) clearInterval(this.scanTimer);
-    const intervalMs = Math.max(20, Number(this.state.settings.scanIntervalSec || 60)) * 1000;
+    const intervalMs = Math.max(25, Number(this.state.settings.scanIntervalSec || 60)) * 1000;
     this.nextScanAt = new Date(Date.now() + intervalMs).toISOString();
     this.scanTimer = setInterval(() => {
       this.nextScanAt = new Date(Date.now() + intervalMs).toISOString();
@@ -155,7 +166,9 @@ export class StrategyScanner {
   }
 
   /**
-   * Führt einen kompletten Scan über alle Leitindizes, das Aktienuniversum und offene Trades aus.
+   * Zweistufiger Scan:
+   * 1) Sofort-Batch-Quote für alle 51 Aktien & 7 Indizes (< 1s) -> Alle Kurse, KGVs, LoDs sofort im UI!
+   * 2) Sanft getakteter M10-Intraday-Scan über die Aktien ohne Rate-Limiting.
    */
   async runFullScan({ reason = 'manual' } = {}) {
     if (this.isScanning) return this.getSnapshot();
@@ -167,7 +180,7 @@ export class StrategyScanner {
       const indexSymbols = Object.values(BENCHMARK_INDICES).map((i) => i.symbol);
       const stockSymbols = universe.map((u) => u.symbol);
 
-      // 1. Batch-Quotes für alle Indizes & Aktien in einem Rutsch abrufen
+      // 1. Batch-Quotes für alle Indizes & Aktien in 2 Requests abrufen (< 500ms)
       const quoteMap = await this.marketData.fetchBatchQuotes([...indexSymbols, ...stockSymbols]);
 
       // 2. Gesamtmarkt-Regime (Schutzfilter 2, Kapitel 2.3) auswerten
@@ -190,46 +203,53 @@ export class StrategyScanner {
         };
       }
 
-      // 3. Sortiere Aktien nach Tagesverlust / Dip-Relevanz, damit die stärksten Rücksetzer zuerst tiefenanalysiert werden
-      const activeTradeSymbols = new Set(this.state.activeTrades.map((t) => t.symbol));
+      // 3. Sofort-Auswertung mit den Batch-Quotes für ALLE Aktien (damit jede Aktie sofort ihren echten Preis hat!)
+      for (const stockMeta of universe) {
+        const q = quoteMap.get(stockMeta.symbol);
+        // Bewahre bestehende Simulations-Setups, falls der Nutzer gerade eine Fallstudie geladen hat
+        const existing = this.stockResults.get(stockMeta.symbol);
+        if (existing?.isSimulation && reason === 'scheduled') continue;
+        await this.evaluateSingleStock(stockMeta, q, { fetchIntraday: false });
+      }
+
+      // Sofort Zwischen-Snapshot ans UI pushen (alle 51 Aktien haben jetzt sofort Kurse & KGV!)
+      this.notifier.broadcastWs({
+        type: 'SCAN_COMPLETED',
+        snapshot: this.getSnapshot()
+      });
+
+      // 4. Jetzt sortieren nach Dip-Relevanz und für alle Aktien sanft die 5m->M10 Kerzen nachladen
       const rankedUniverse = [...universe].sort((a, b) => {
         const qa = quoteMap.get(a.symbol);
         const qb = quoteMap.get(b.symbol);
-        const ca = qa?.regularMarketChangePercent ?? 0;
-        const cb = qb?.regularMarketChangePercent ?? 0;
-        return ca - cb; // Stärkste Verlierer zuerst
+        return (qa?.regularMarketChangePercent ?? 0) - (qb?.regularMarketChangePercent ?? 0);
       });
 
-      // Wir holen 5m-Intraday-Daten für die Top 22 stärksten Rücksetzer + alle aktiven Trades + Custom Stocks
-      const deepScanSet = new Set([
-        ...rankedUniverse.slice(0, 22).map((u) => u.symbol),
-        ...activeTradeSymbols,
-        ...this.state.customStocks.map((c) => c.symbol)
-      ]);
-
-      // Verarbeite in kleinen parallelen Batches (je 5 Symbole), um Yahoo schnell und schonend abzufragen
-      const batchSize = 5;
+      const batchSize = 3;
       for (let i = 0; i < rankedUniverse.length; i += batchSize) {
         const slice = rankedUniverse.slice(i, i + batchSize);
         await Promise.all(
-          slice.map((stockMeta) =>
-            this.evaluateSingleStock(stockMeta, quoteMap.get(stockMeta.symbol), {
-              fetchIntraday: deepScanSet.has(stockMeta.symbol)
-            })
-          )
+          slice.map((stockMeta) => {
+            const existing = this.stockResults.get(stockMeta.symbol);
+            if (existing?.isSimulation) return Promise.resolve();
+            return this.evaluateSingleStock(stockMeta, quoteMap.get(stockMeta.symbol), {
+              fetchIntraday: true
+            });
+          })
         );
+        // Kurze Pause (80ms) gegen Yahoo Rate-Limits
+        await new Promise((r) => setTimeout(r, 80));
       }
 
-      // 4. Aktive Trades auf Stufe 2 (Break-Even) & Stufe 3 (Dynamischer Stagnations-Exit) prüfen
+      // 5. Aktive Trades auf Stufe 2 (Break-Even) & Stufe 3 (Dynamischer Stagnations-Exit) prüfen
       await this.evaluateAllActiveTrades();
 
       this.lastScanAt = new Date().toISOString();
     } finally {
       this.isScanning = false;
-      const snap = this.getSnapshot();
       this.notifier.broadcastWs({
         type: 'SCAN_COMPLETED',
-        snapshot: snap
+        snapshot: this.getSnapshot()
       });
     }
 
@@ -246,37 +266,31 @@ export class StrategyScanner {
       const marketClock = checkReferenceMarketOpen(idxInfo.region);
 
       let m10Bars = this.m10Store.get(stockMeta.symbol) || [];
-      let dailyBars = [];
 
-      if (fetchIntraday || m10Bars.length === 0) {
+      if (fetchIntraday || forceRefresh) {
         try {
-          const [intradayData, dBars] = await Promise.all([
-            this.marketData.fetchIntraday5m(stockMeta.symbol, { forceRefresh }),
-            this.marketData.fetchDailyBars(stockMeta.symbol)
-          ]);
-          dailyBars = dBars;
-
+          const intradayData = await this.marketData.fetchIntraday5m(stockMeta.symbol, { forceRefresh });
           const tz = idxInfo.region === 'US' ? 'America/New_York' : 'Europe/Berlin';
           const rawM10 = resampleToM10(intradayData.bars, tz);
           m10Bars = enrichM10Indicators(rawM10);
           this.m10Store.set(stockMeta.symbol, m10Bars);
 
-          // Falls Quote leer war, aus Chart-Meta ergänzen
-          if (!quote || !quote.regularMarketPrice) {
-            const m = intradayData.meta || {};
-            quote = {
-              ...quote,
-              regularMarketPrice: m.regularMarketPrice || (m10Bars.length ? m10Bars[m10Bars.length - 1].close : 0),
-              regularMarketPreviousClose: m.chartPreviousClose,
-              regularMarketDayHigh: m.regularMarketDayHigh,
-              regularMarketDayLow: m.regularMarketDayLow,
-              fiftyTwoWeekHigh: m.fiftyTwoWeekHigh,
-              fiftyTwoWeekLow: m.fiftyTwoWeekLow,
-              currency: m.currency || stockMeta.currency
-            };
-          }
+          const m = intradayData.meta || {};
+          quote = {
+            ...quote,
+            regularMarketPrice:
+              quote?.regularMarketPrice ||
+              m.regularMarketPrice ||
+              (m10Bars.length ? m10Bars[m10Bars.length - 1].close : 0),
+            regularMarketPreviousClose: quote?.regularMarketPreviousClose || m.chartPreviousClose,
+            regularMarketDayHigh: quote?.regularMarketDayHigh || m.regularMarketDayHigh,
+            regularMarketDayLow: quote?.regularMarketDayLow || m.regularMarketDayLow,
+            fiftyTwoWeekHigh: quote?.fiftyTwoWeekHigh || m.fiftyTwoWeekHigh,
+            fiftyTwoWeekLow: quote?.fiftyTwoWeekLow || m.fiftyTwoWeekLow,
+            currency: quote?.currency || m.currency || stockMeta.currency
+          };
         } catch {
-          // Falls Intraday für ein Symbol fehlschlägt, nutze vorhandene Daten
+          // Nutze Batch-Quote + gecachte M10-Kerzen
         }
       }
 
@@ -287,17 +301,30 @@ export class StrategyScanner {
       const fundamentals = evaluateFundamentalAndFilters(
         stockMeta,
         quote || {},
-        dailyBars,
+        [],
         indexRegime,
         this.state.settings
       );
 
-      const dailySupports = findDailySupportZones(dailyBars, quote || {}, currentPrice);
-      const analysis = analyzeM10BottomFormation(m10Bars, dailySupports, fundamentals);
+      const dailySupports = findDailySupportZones([], quote || {}, currentPrice);
+      let analysis = analyzeM10BottomFormation(m10Bars, dailySupports, fundamentals);
+
+      // Falls M10-Kerzen noch geladen werden, fülle LoD & Kurs aus dem Echtzeit-Quote!
+      const fallbackLod = quote?.regularMarketDayLow || currentPrice * 0.985;
+      if (!analysis.lodPrice && fallbackLod > 0) {
+        const distPct = ((currentPrice - fallbackLod) / fallbackLod) * 100;
+        analysis = {
+          ...analysis,
+          lodPrice: Math.round(fallbackLod * 100) / 100,
+          currentPrice: Math.round(currentPrice * 100) / 100,
+          distanceFromLodPct: Math.round(distPct * 100) / 100,
+          sessionHigh: Math.round((quote?.regularMarketDayHigh || currentPrice) * 100) / 100
+        };
+      }
 
       const sizing = calculateRiskAndPositionSizing({
         entryPrice: analysis.currentPrice || currentPrice,
-        lodPrice: analysis.lodPrice || quote?.regularMarketDayLow || currentPrice * 0.985,
+        lodPrice: analysis.lodPrice || fallbackLod,
         accountCapital: this.state.settings.accountCapital,
         maxRiskPct: this.state.settings.maxRiskPct,
         noiseBufferPct: this.state.settings.noiseBufferPct,
@@ -308,14 +335,14 @@ export class StrategyScanner {
 
       const fullRecord = {
         symbol: stockMeta.symbol,
-        name: stockMeta.name,
+        name: quote?.shortName || stockMeta.name,
         index: stockMeta.index,
         indexName: idxInfo.name,
         region: idxInfo.region,
         sector: stockMeta.sector,
         profile: stockMeta.profile,
         currency: quote?.currency || stockMeta.currency || 'EUR',
-        price: analysis.currentPrice || currentPrice || 0,
+        price: Math.round((analysis.currentPrice || currentPrice || 0) * 100) / 100,
         intradayChangePct: fundamentals.intradayChangePct,
         dipFromSwingHighPct: fundamentals.dipFromSwingHighPct,
         fundamentals,
@@ -323,12 +350,12 @@ export class StrategyScanner {
         analysis,
         sizing,
         checklist,
+        hasM10Bars: m10Bars.length > 0,
         updatedAt: new Date().toISOString()
       };
 
       this.stockResults.set(stockMeta.symbol, fullRecord);
 
-      // Prüfe, ob eine automatische Echtzeit-Benachrichtigung (Web + Telegram gleichzeitig!) ausgelöst werden soll
       const lastSession = m10Bars.length > 0 ? m10Bars[m10Bars.length - 1].sessionDate : 'today';
       if (
         analysis.phase >= 2 &&
@@ -372,9 +399,6 @@ export class StrategyScanner {
     }
   }
 
-  /**
-   * Prüft alle laufenden Trades auf Stufe 2 (Break-Even) & Stufe 3 (Stagnations-Exit).
-   */
   async evaluateAllActiveTrades() {
     for (const trade of this.state.activeTrades) {
       if (trade.status !== 'OPEN') continue;
@@ -395,7 +419,6 @@ export class StrategyScanner {
 
       trade.latestEvaluation = evaluation;
 
-      // Sende Echtzeit-Alarm bei Break-Even (Stufe 2), Stagnations-Exit (Stufe 3) oder Stop-Loss (Stufe 0)
       if (evaluation.alertType === 'MOVE_TO_BREAKEVEN' && !trade.breakEvenNotified) {
         trade.breakEvenNotified = true;
         this.saveState();
@@ -444,11 +467,6 @@ export class StrategyScanner {
     }
   }
 
-  /**
-   * Simuliert auf Knopfdruck die End-to-End Praxis-Fallstudie aus Kapitel 08 des Playbooks
-   * (Symrise AG: Vortag 106,00 € -> Gap-Down 98,00 € -> LoD 95,40 € -> Phase 4 Entry bei 96,50 € -> Stagnations-Exit bei 100,30 €)
-   * und verschickt im selben Moment die Echtzeit-Benachrichtigung an Web-Dashboard UND Telegram!
-   */
   async triggerCaseStudySimulation(stage = 'phase4_entry') {
     const m10Bars = generatePlaybookCaseStudyBars(stage);
     const symbol = 'SY1.DE';
@@ -498,7 +516,6 @@ export class StrategyScanner {
       this.state.settings
     );
 
-    // Für Stagnations-Exit-Demo berechnen wir zuerst das Entry-Setup bei 96.50 € und dann den laufenden Trade bei 100.30 €
     const entryM10Bars = stage === 'stagnation_exit' ? generatePlaybookCaseStudyBars('phase4_entry') : m10Bars;
     const analysis = analyzeM10BottomFormation(entryM10Bars, dailySupports, fundamentals);
 
@@ -507,7 +524,7 @@ export class StrategyScanner {
       lodPrice: 95.40,
       accountCapital: this.state.settings.accountCapital || 10000,
       maxRiskPct: this.state.settings.maxRiskPct || 5.0,
-      noiseBufferPct: 0.21, // ergibt exakt 95.20 € Stop-Loss wie im Playbook Kap. 08!
+      noiseBufferPct: 0.21,
       stockProfile: 'conservative',
       customLeverage: 8,
       customCertPrice: 1.20
@@ -541,6 +558,7 @@ export class StrategyScanner {
       analysis,
       sizing,
       checklist,
+      hasM10Bars: true,
       isSimulation: true,
       updatedAt: new Date().toISOString()
     };
@@ -625,9 +643,6 @@ export class StrategyScanner {
     return { record: fullRecord, alert: alertResult };
   }
 
-  /**
-   * Öffnet einen neuen Trade zur Live-Überwachung auf Break-Even (Stufe 2) & Stagnations-Exit (Stufe 3).
-   */
   openActiveTrade(payload) {
     const symbol = String(payload.symbol || '').toUpperCase();
     const record = this.stockResults.get(symbol);
@@ -667,9 +682,6 @@ export class StrategyScanner {
     return trade;
   }
 
-  /**
-   * Schließt einen aktiven Trade und überträgt ihn automatisch in das Trading-Journal (Kapitel 9.1).
-   */
   closeActiveTrade(tradeId, exitPriceInput = null, exitReason = 'Stagnations-Exit (Kap. 06)') {
     const idx = this.state.activeTrades.findIndex((t) => t.id === tradeId);
     if (idx === -1) throw new Error('Trade nicht gefunden');
@@ -687,7 +699,6 @@ export class StrategyScanner {
     const rMultiple = (exitPrice - trade.entryPrice) / riskPerShare;
     const stopDistancePct = (riskPerShare / trade.entryPrice) * 100;
 
-    // Dokumentiere alle 6 empfohlenen Kennzahlen für das Trading-Journal aus Kapitel 9.1
     const journalEntry = {
       id: `journal_${Date.now()}`,
       symbol: trade.symbol,
@@ -722,7 +733,6 @@ export class StrategyScanner {
 
   getSnapshot() {
     const stocks = Array.from(this.stockResults.values()).sort((a, b) => {
-      // Sortiere zuerst nach Phase (Phase 4 > Phase 3 > Phase 2 > Phase 1 > Rest), danach nach Konfluenz & Tages-Dip
       const pa = a.analysis?.phase ?? -9;
       const pb = b.analysis?.phase ?? -9;
       if (pb !== pa) return pb - pa;

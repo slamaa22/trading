@@ -293,21 +293,21 @@ export class NotificationManager {
             });
           }
 
-          if (text === '/start' || text === '/help') {
+          if (text.startsWith('/start') || text === '/help') {
             await this.sendTelegramRaw(
               settings.telegramBotToken,
               incomingChatId,
               [
-                `✅ <b>Antizyklischer Mean-Reversion Scanner verbunden!</b>`,
-                `Deine Chat-ID (<code>${incomingChatId}</code>) ist aktiv.`,
+                `✅ <b>@PureSiteTrading_bot erfolgreich verbunden!</b>`,
+                `Deine Chat-ID (<code>${incomingChatId}</code>) ist jetzt fest im Server hinterlegt.`,
                 ``,
-                `Du erhältst ab sofort <b>gleichzeitig mit dem Web-Dashboard</b> automatische Echtzeit-Alarme bei:`,
-                `• 🔵 <b>Phase 2:</b> Tagestief (LoD) & Absorption erkannt`,
-                `• 🟡 <b>Phase 3:</b> Sekundärer Test & Boden-Kompression (3–6 M10-Kerzen)`,
-                `• 🟢 <b>Phase 4:</b> Impuls-Trigger (Kaufsignal + 5%-Risiko- & Hebel-5x-10x-Berechnung)`,
-                `• 🏁 <b>Exit-Alarme:</b> Stufe 2 Break-Even & Stufe 3 Stagnations-Exit`,
+                `Du erhältst ab sofort <b>im exakt selben Moment wie im Web-Dashboard</b> automatische Echtzeit-Alarme bei:`,
+                `• 🔵 <b>Phase 2:</b> Tagestief (LoD) &amp; Absorption erkannt`,
+                `• 🟡 <b>Phase 3:</b> Sekundärer Test &amp; Boden-Kompression (3–6 M10-Kerzen)`,
+                `• 🟢 <b>Phase 4:</b> Impuls-Trigger (Kaufsignal + 5%-Risiko- &amp; Hebel-5x-10x-Berechnung)`,
+                `• 🏁 <b>Exit-Alarme:</b> Stufe 2 Break-Even &amp; Stufe 3 Stagnations-Exit`,
                 ``,
-                `Befehle: /status · /top`
+                `Befehle direkt im Chat: /status · /top`
               ].join('\n')
             );
           } else if (text === '/status' || text === '/top') {
@@ -334,7 +334,7 @@ export class NotificationManager {
       } catch {
         // Ignoriere Netzwerk-Timeouts beim Hintergrund-Polling
       }
-    }, 8000);
+    }, 3000);
   }
 }
 

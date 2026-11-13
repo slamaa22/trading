@@ -56,7 +56,7 @@ export const DEFAULT_UNIVERSE = [
   // SMI (Schweiz)
   { symbol: 'NESN.SW', name: 'Nestlé S.A.', index: 'SMI', sector: 'Basiskonsum', profile: 'conservative', currency: 'CHF' },
   { symbol: 'NOVN.SW', name: 'Novartis AG', index: 'SMI', sector: 'Pharma', profile: 'conservative', currency: 'CHF' },
-  { symbol: 'ROG.SW', name: 'Roche Holding AG', index: 'SMI', sector: 'Pharma', profile: 'conservative', currency: 'CHF' },
+  { symbol: 'SIKA.SW', name: 'Sika AG', index: 'SMI', sector: 'Bauchemie / Industrie', profile: 'conservative', currency: 'CHF' },
   { symbol: 'ZURN.SW', name: 'Zurich Insurance Group', index: 'SMI', sector: 'Versicherungen', profile: 'conservative', currency: 'CHF' },
   { symbol: 'ABBN.SW', name: 'ABB Ltd', index: 'SMI', sector: 'Industrie', profile: 'conservative', currency: 'CHF' },
   { symbol: 'GIVN.SW', name: 'Givaudan SA', index: 'SMI', sector: 'Chemie / Aromen', profile: 'conservative', currency: 'CHF' },
