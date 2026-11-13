@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mean-Reversion Playbook Scanner · M10 Trigger & Telegram/Web Alerts</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- TOP HEADER BAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo">MR</div>
+      <div>
+        <h1>Antizyklischer Mean-Reversion Scanner <span class="badge-long">LONG-ONLY · M10</span></h1>
+        <p class="subtitle">Systematisches Playbook · 4-Phasen-Bodenbildung · 5%-Risiko &amp; Hebel 5x–10x · Gleichzeitige Web- &amp; Telegram-Alarme</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="scan-status-pill" id="scanStatusPill">
+        <span class="pulse-dot" id="wsStatusDot"></span>
+        <span id="scanStatusText">Verbinde...</span>
+      </div>
+
+      <button class="btn btn-secondary" id="btnScanNow" title="Jetzt alle Indizes & Aktien scannen">
+        ↻ Jetzt Scannen
+      </button>
+
+      <div class="sim-dropdown">
+        <button class="btn btn-accent" id="btnSimCaseStudy" title="Simuliert die Playbook-Fallstudie (Kapitel 08: Symrise AG) inkl. gleichzeitigem Web- & Telegram-Alarm">
+          ⚡ Fallstudie (Kap. 08) &amp; Alarm testen ▾
+        </button>
+        <div class="sim-menu" id="simMenu">
+          <div class="sim-menu-header">Playbook Kap. 08 (Symrise AG) live simulieren + Alarm an Web &amp; Telegram senden:</div>
+          <button data-sim="phase2_watchlist">👁️ Phase 2: Absorption &amp; Tagestief (95,40 €) – Watchlist-Alarm</button>
+          <button data-sim="phase3_prepare">⚡ Phase 3: Sekundärer Test &amp; Kompression (4 M10-Kerzen)</button>
+          <button data-sim="phase4_entry">🚨 Phase 4: Impuls-Trigger (Ausbruch 96,50 €) – KAUFSIGNAL</button>
+          <button data-sim="stagnation_exit">🏁 Stufe 3: Dynamischer Stagnations-Exit (100,30 € / +31,5%)</button>
+        </div>
+      </div>
+
+      <button class="btn btn-telegram" id="btnOpenSettings">
+        <span id="tgStatusIndicator">⚙️ Telegram &amp; Risiko-Setup</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- GESAMTMARKT-REGIME BAR (SCHUTZFILTER 2 - KAPITEL 2.3) -->
+  <section class="regime-bar" id="indexRegimeBar">
+    <div class="regime-label">🛡️ Gesamtmarkt-Regime (Kap. 2.3):</div>
+    <div class="regime-items" id="indexRegimeItems">
+      <!-- Dynamisch gefüllt -->
+    </div>
+  </section>
+
+  <!-- LIVE ALERT BANNER (ERSCHEINT BEI NEUEM SIGNAL GLEICHZEITIG MIT TELEGRAM) -->
+  <div id="liveAlertBanner" class="live-alert-banner hidden">
+    <div class="live-alert-content">
+      <span class="live-alert-badge" id="bannerBadge">PHASE 4</span>
+      <div class="live-alert-text">
+        <strong id="bannerTitle">Signal erkannt</strong>
+        <span id="bannerSub">Details</span>
+      </div>
+    </div>
+    <div class="live-alert-meta">
+      <span id="bannerDelivery" class="delivery-pill">Web + Telegram</span>
+      <button class="btn btn-sm" id="btnBannerView">Im Chart öffnen</button>
+      <button class="btn-close" id="btnBannerClose">✕</button>
+    </div>
+  </div>
+
+  <!-- HAUPT-GRID -->
+  <main class="workspace-grid">
+    <!-- LINKE SPALTE: UNIVERSUM & PHASEN-SCANNER -->
+    <aside class="panel scanner-panel">
+      <div class="panel-header">
+        <div>
+          <h2>📡 Live Aktien-Scanner</h2>
+          <span class="muted" id="universeCountLabel">0 Qualitätsaktien überwacht</span>
+        </div>
+        <div class="add-stock-form">
+          <input type="text" id="inputAddSymbol" placeholder="Ticker (z.B. RHM.DE, TSLA)" />
+          <button class="btn btn-sm btn-secondary" id="btnAddSymbol" title="Aktie zur Watchlist hinzufügen">+</button>
+        </div>
+      </div>
+
+      <!-- PHASEN-FILTER TABS -->
+      <div class="filter-tabs" id="phaseFilterTabs">
+        <button class="filter-tab active" data-filter="all">Alle</button>
+        <button class="filter-tab tab-p4" data-filter="phase4">🚨 Phase 4 (Entry)</button>
+        <button class="filter-tab tab-p3" data-filter="phase3">⚡ Phase 3 (Boden)</button>
+        <button class="filter-tab tab-p2" data-filter="phase2">👁️ Phase 2 (LoD)</button>
+        <button class="filter-tab tab-dips" data-filter="dips">📉 Dips (&lt; -2%)</button>
+      </div>
+
+      <div class="search-row">
+        <input type="text" id="inputSearchStock" placeholder="🔍 Aktie, Symbol oder Index filtern..." />
+      </div>
+
+      <div class="stock-list" id="stockListContainer">
+        <!-- Dynamisch gefüllt -->
+      </div>
+    </aside>
+
+    <!-- MITTLERE SPALTE: 10-MINUTEN-CHART (M10), 4-PHASEN-STEPPER, KONFLUENZ & CHECKLISTE -->
+    <section class="panel center-panel">
+      <!-- AKTUELLER AKTIEN-KOPF -->
+      <div class="stock-detail-header" id="stockDetailHeader">
+        <div class="stock-title-block">
+          <div class="stock-title-row">
+            <h2 id="detailStockName">Symrise AG</h2>
+            <span class="ticker-chip" id="detailStockSymbol">SY1.DE</span>
+            <span class="index-chip" id="detailStockIndex">DAX 40</span>
+            <span class="market-hours-chip" id="detailMarketHours">Heimatbörse prüfen...</span>
+          </div>
+          <div class="stock-sub-row" id="detailFundamentalSummary">
+            KGV-Check &amp; Katalysator-Filter werden geladen...
+          </div>
+        </div>
+
+        <div class="stock-price-block">
+          <div class="current-price-large" id="detailCurrentPrice">0,00 €</div>
+          <div class="price-changes">
+            <span id="detailIntradayChange" class="change-pill">0,00% heute</span>
+            <span id="detailSwingDip" class="change-pill muted-pill">0,0% v. Hoch</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4-PHASENFORTSCHRITT IM 10-MINUTEN-CHART (KAPITEL 3.2) -->
+      <div class="phase-tracker-card">
+        <div class="phase-steps" id="phaseStepper">
+          <div class="phase-step" data-step="1">
+            <div class="step-num">Phase 1</div>
+            <div class="step-title">Kapitulation (Climax)</div>
+            <div class="step-desc">Kaufverbot (Fallendes Messer)</div>
+          </div>
+          <div class="phase-step" data-step="2">
+            <div class="step-num">Phase 2</div>
+            <div class="step-title">Absorption &amp; LoD</div>
+            <div class="step-desc">Watchlist-Alarm · Tagestief</div>
+          </div>
+          <div class="phase-step" data-step="3">
+            <div class="step-num">Phase 3</div>
+            <div class="step-title">Sekundärer Test</div>
+            <div class="step-desc">3–6 M10-Kerzen Kompression</div>
+          </div>
+          <div class="phase-step" data-step="4">
+            <div class="step-num">Phase 4</div>
+            <div class="step-title">Impuls-Trigger</div>
+            <div class="step-desc">Grüne M10-Ausbruchskerze</div>
+          </div>
+        </div>
+        <div class="phase-action-box" id="phaseActionBox">
+          Wähle links eine Aktie aus oder starte die Playbook-Fallstudie (Kapitel 08).
+        </div>
+      </div>
+
+      <!-- INTERAKTIVER 10-MINUTEN-CHART (M10) INKL. EMA20, VWAP, LOD, STOP-LOSS & RSI(14) -->
+      <div class="chart-card">
+        <div class="chart-toolbar">
+          <div class="chart-legend">
+            <span class="legend-item"><strong>10-Minuten-Chart (M10)</strong></span>
+            <span class="legend-item"><span class="dot dot-ema"></span> EMA 20: <b id="legEma20">-</b></span>
+            <span class="legend-item"><span class="dot dot-vwap"></span> Intraday-VWAP: <b id="legVwap">-</b></span>
+            <span class="legend-item"><span class="dot dot-lod"></span> Tagestief (LoD): <b id="legLod">-</b></span>
+            <span class="legend-item"><span class="dot dot-sl"></span> Stop-Loss (inkl. Puffer): <b id="legSl">-</b></span>
+            <span class="legend-item"><span class="dot dot-rsi"></span> RSI(14): <b id="legRsi">-</b></span>
+          </div>
+          <button class="btn btn-xs btn-secondary" id="btnRefreshChart">↻ M10-Kerzen aktualisieren</button>
+        </div>
+
+        <div class="canvas-wrapper">
+          <canvas id="m10ChartCanvas" width="900" height="390"></canvas>
+          <div id="chartTooltip" class="chart-tooltip hidden"></div>
+        </div>
+      </div>
+
+      <!-- UNTERER BEREICH: 4 KONFLUENZ-SIGNALE (KAP. 3.3) & 9-PUNKTE PRE-TRADE-CHECKLISTE (KAP. 09) -->
+      <div class="bottom-split-grid">
+        <div class="subcard">
+          <div class="subcard-header">
+            <h3>🔍 4 Objektive Konfluenz-Signale (Kap. 3.3)</h3>
+            <span class="badge" id="confluenceScoreBadge">0 / 4 aktiv</span>
+          </div>
+          <p class="tiny-note">Für ein hochqualitatives A-Setup sollten mindestens 2 von 4 Bestätigungsmerkmalen am Boden vorliegen:</p>
+          <div class="confluence-list" id="confluenceList">
+            <!-- Dynamisch gefüllt -->
+          </div>
+        </div>
+
+        <div class="subcard">
+          <div class="subcard-header">
+            <h3>✅ Operative Pre-Trade-Checkliste (Kap. 09)</h3>
+            <span class="badge" id="checklistScoreBadge">0 / 9 erfüllt</span>
+          </div>
+          <div class="checklist-list" id="preTradeChecklist">
+            <!-- Dynamisch gefüllt -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RECHTE SPALTE: 5%-RISIKO & DERIVATE-RECHNER (HEBEL 5x-10x), AKTIVE TRADES & ALARME -->
+    <aside class="panel right-panel">
+      <div class="right-tabs">
+        <button class="right-tab active" data-rtab="calculator">🧮 5%-Risiko &amp; Hebel</button>
+        <button class="right-tab" data-rtab="trades">📈 Aktive Trades (<span id="activeTradesCount">0</span>)</button>
+        <button class="right-tab" data-rtab="alerts">🔔 Alarme (<span id="alertsCount">0</span>)</button>
+      </div>
+
+      <!-- TAB 1: 5%-RISIKO & KNOCK-OUT DERIVATE-RECHNER (KAPITEL 04 & 05) -->
+      <div class="rtab-content active" id="rtab-calculator">
+        <div class="calc-section">
+          <div class="calc-header">
+            <h3>Knock-Out (Turbo Long) &amp; 5%-Positionsgrößen-Rechner</h3>
+            <span class="tiny-note">Kapitel 04 &amp; 05 · Striktes Stop-Loss unter Tagestief (LoD) · Delta ~ 1</span>
+          </div>
+
+          <div class="calc-form-grid">
+            <div class="form-group">
+              <label>Gesamtkapital (€)</label>
+              <input type="number" id="calcCapital" step="500" value="10000" />
+            </div>
+            <div class="form-group">
+              <label>Max. Risiko pro Trade (%)</label>
+              <input type="number" id="calcRiskPct" step="0.5" min="0.5" max="10" value="5.0" />
+            </div>
+            <div class="form-group">
+              <label>Einstiegskurs Aktie</label>
+              <input type="number" id="calcEntryPrice" step="0.05" value="96.50" />
+            </div>
+            <div class="form-group">
+              <label>Tagestief (LoD) Aktie</label>
+              <input type="number" id="calcLodPrice" step="0.05" value="95.40" />
+            </div>
+            <div class="form-group">
+              <label>Noise-Puffer unter LoD (%)</label>
+              <input type="number" id="calcNoiseBuffer" step="0.05" min="0.05" max="1.0" value="0.20" title="0,15% bis 0,30% unter dem tiefsten Docht des Tagestiefs" />
+            </div>
+            <div class="form-group">
+              <label>Gewählter Hebel (5x–10x)</label>
+              <select id="calcLeverage">
+                <option value="auto">Automatisch (Playbook Kap. 4.2)</option>
+                <option value="10">Hebel 10x (Enge Böden / Blue Chips)</option>
+                <option value="9">Hebel 9x</option>
+                <option value="8">Hebel 8x (Standard Qualitätsaktie)</option>
+                <option value="7">Hebel 7x</option>
+                <option value="6">Hebel 6x (Volatilere Werte)</option>
+                <option value="5">Hebel 5x (Tiefe Böden / US-Tech)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Zertifikat Briefkurs (€, optional)</label>
+              <input type="number" id="calcCertPrice" step="0.01" placeholder="Auto (Delta ~1)" />
+            </div>
+            <div class="form-group">
+              <label>Bezugsverhältnis</label>
+              <select id="calcCertRatio">
+                <option value="0.1">0,1 (Standard 1:10)</option>
+                <option value="0.01">0,01 (1:100)</option>
+                <option value="1">1,0 (1:1)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 4-SCHRITT-ERGEBNISBOX (KAPITEL 5.2) -->
+          <div class="calc-results-box" id="calcResultsBox">
+            <!-- Dynamisch gefüllt -->
+          </div>
+
+          <button class="btn btn-primary btn-full" id="btnOpenTradeFromCalc">
+            🛡️ Diesen Trade jetzt aktiv überwachen (Stufe 1–3 &amp; Stagnations-Exit)
+          </button>
+
+          <!-- POSITIONSGRÖSSEN-MATRIX (KAPITEL 5.3) -->
+          <div class="matrix-section">
+            <h4>Schnell-Referenztabelle: Positionsgrößen-Matrix (für 5% Kontorisiko)</h4>
+            <table class="matrix-table">
+              <thead>
+                <tr>
+                  <th>Hebel</th>
+                  <th>SL Derivat</th>
+                  <th>Konto-%</th>
+                  <th>Kaufbetrag</th>
+                  <th>Stop-Wert</th>
+                </tr>
+              </thead>
+              <tbody id="calcMatrixBody">
+                <!-- Dynamisch gefüllt -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: AKTIVE TRADES (STUFE 1-3 & DYNAMISCHER STAGNATIONS-EXIT, KAP. 06) & JOURNAL -->
+      <div class="rtab-content" id="rtab-trades">
+        <div class="trades-section">
+          <h3>📈 Laufende Positionen (3-Stufen-Überwachung)</h3>
+          <p class="tiny-note">Überwacht M10-Kerzen automatisch auf <b>Stufe 2 (Break-Even ab 1,5R)</b> und <b>Stufe 3 (Dynamischer Stagnations-Exit)</b> inkl. Telegram-Alarm.</p>
+          <div id="activeTradesList" class="active-trades-list">
+            <!-- Dynamisch gefüllt -->
+          </div>
+
+          <hr class="divider" />
+          <h3>📓 Post-Trade-Journal (Kapitel 9.1)</h3>
+          <div id="journalList" class="journal-list">
+            <!-- Dynamisch gefüllt -->
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: LIVE BENACHRICHTIGUNGS-CHRONIK (WEB + TELEGRAM SYNCHRON-LOG) -->
+      <div class="rtab-content" id="rtab-alerts">
+        <div class="alerts-section">
+          <div class="alerts-header-row">
+            <h3>🔔 Echtzeit-Benachrichtigungen</h3>
+            <button class="btn btn-xs btn-secondary" id="btnTriggerTestAlert">🚀 Test-Alarm (Web + Telegram)</button>
+          </div>
+          <p class="tiny-note">Jedes Signal wird im exakt gleichen Moment hier im Dashboard (inkl. Sound) und über deinen Telegram-Bot gesendet.</p>
+          <div id="alertsHistoryList" class="alerts-history-list">
+            <!-- Dynamisch gefüllt -->
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- MODAL: TELEGRAM & SYSTEM-EINSTELLUNGEN -->
+  <div class="modal-backdrop hidden" id="settingsModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>⚙️ Telegram-Bot &amp; Strategie-Konfiguration</h2>
+        <button class="btn-close" id="btnCloseSettings">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="telegram-setup-box">
+          <h3>📲 Gleichzeitige Telegram-Benachrichtigungen einrichten</h3>
+          <ol class="setup-steps">
+            <li>Öffne in Telegram <b>@BotFather</b>, sende <code>/newbot</code> und kopiere den <b>Bot-Token</b> hier unten hinein.</li>
+            <li>Öffne deinen neuen Bot in Telegram und klicke einmal auf <b>Starten</b> (oder sende <code>/start</code>).</li>
+            <li>Klicke hier auf <b>„Chat-ID automatisch erkennen“</b> – fertig!</li>
+          </ol>
+
+          <div class="form-group">
+            <label>Telegram Bot-Token (von @BotFather)</label>
+            <input type="password" id="setTelegramToken" placeholder="z.B. 7123456789:AAH..." autocomplete="off" />
+          </div>
+
+          <div class="form-row-inline">
+            <div class="form-group" style="flex:1">
+              <label>Telegram Chat-ID</label>
+              <input type="text" id="setTelegramChatId" placeholder="Wird automatisch erkannt oder manuell eingeben" />
+            </div>
+            <button class="btn btn-secondary" id="btnDetectChatId" style="margin-top:18px">
+              🔍 Chat-ID automatisch erkennen
+            </button>
+          </div>
+
+          <div id="telegramDetectFeedback" class="feedback-box hidden"></div>
+
+          <div class="form-row-inline" style="margin-top:10px">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setTelegramEnabled" checked />
+              Telegram-Alarme aktiv (im selben Moment wie Web-Dashboard senden)
+            </label>
+            <button class="btn btn-accent btn-sm" id="btnModalTestAlert">
+              🚀 Gleichzeitigen Test-Alarm senden
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-grid-2">
+          <div class="form-group">
+            <label>Standard Trading-Kapital (€)</label>
+            <input type="number" id="setAccountCapital" step="500" value="10000" />
+          </div>
+          <div class="form-group">
+            <label>Max. Risiko pro Trade (% vom Konto, Playbook = 5%)</label>
+            <input type="number" id="setMaxRiskPct" step="0.5" value="5.0" />
+          </div>
+          <div class="form-group">
+            <label>Stop-Loss Noise-Puffer unter Tagestief (%)</label>
+            <input type="number" id="setNoiseBufferPct" step="0.05" value="0.20" />
+          </div>
+          <div class="form-group">
+            <label>Benachrichtigen ab Phase</label>
+            <select id="setMinAlertPhase">
+              <option value="2">Ab Phase 2 (Watchlist-Alarm bei LoD + Phase 3 + Phase 4 Entry)</option>
+              <option value="3">Ab Phase 3 (Sekundärer Test + Phase 4 Entry)</option>
+              <option value="4">Nur Phase 4 (Reines Kaufsignal / Impuls-Trigger)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Scan-Intervall (Sekunden)</label>
+            <input type="number" id="setScanIntervalSec" min="20" max="600" value="60" />
+          </div>
+          <div class="form-group">
+            <label>Intraday-Dip-Vorfilter (%)</label>
+            <input type="number" id="setMinDipPct" step="0.5" value="-2.0" />
+          </div>
+        </div>
+
+        <div class="form-row-inline" style="margin-top:8px">
+          <label class="checkbox-label">
+            <input type="checkbox" id="setSoundAlerts" checked />
+            🔊 Akustischer Sound-Alarm im Web-Dashboard bei neuen Signalen
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="setBrowserNotifications" checked />
+            🖥️ Browser-Systembenachrichtigungen aktivieren
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelSettings">Abbrechen</button>
+        <button class="btn btn-primary" id="btnSaveSettings">💾 Einstellungen speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

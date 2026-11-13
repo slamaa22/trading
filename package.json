@@ -1,0 +1,15 @@
+{
+  "name": "mean-reversion-playbook-scanner",
+  "version": "1.0.0",
+  "description": "Antizyklische Mean-Reversion-Strategie (Long-Only) Scanner, 10m-Chart-Analyse, 5%-Risiko-Rechner & Echtzeit Web/Telegram-Benachrichtigungen",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/strategy.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
