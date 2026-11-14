@@ -25,7 +25,9 @@ const state = {
   rsiSeries: null,
   lodPriceLine: null,
   slPriceLine: null,
-  lastDemoTickAt: 0
+  lastDemoTickAt: 0,
+  newsFilter: 'all',
+  searchTimer: null
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -380,10 +382,65 @@ function bindUIEvents() {
     });
   }
 
-  // Aktie hinzufügen
-  document.getElementById('btnAddSymbol').addEventListener('click', addStockFromInput);
-  document.getElementById('inputAddSymbol').addEventListener('keydown', (e) => {
+  // Aktie hinzufügen (Modal + Direkt-Leiste in der Überwachung)
+  document.getElementById('btnAddSymbol')?.addEventListener('click', addStockFromInput);
+  document.getElementById('inputAddSymbol')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') addStockFromInput();
+  });
+
+  const quickInput = document.getElementById('inputWatchlistQuickAdd');
+  const quickBtn = document.getElementById('btnWatchlistQuickAdd');
+  if (quickBtn) {
+    quickBtn.addEventListener('click', () => addStockToWatchlist(quickInput?.value));
+  }
+  if (quickInput) {
+    quickInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addStockToWatchlist(quickInput.value);
+      }
+    });
+    quickInput.addEventListener('input', (e) => {
+      handleWatchlistAutocompleteInput(e.target.value);
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.tr-watch-add-wrap')) {
+      document.getElementById('watchlistSearchSuggestions')?.classList.add('hidden');
+    }
+  });
+
+  document.getElementById('btnRemoveSelectedStock')?.addEventListener('click', () => {
+    if (state.selectedSymbol) removeStockFromWatchlist(state.selectedSymbol);
+  });
+
+  document.getElementById('btnRestoreWatchlist')?.addEventListener('click', restoreDefaultWatchlist);
+
+  // News-Tracker Filter & Refresh
+  document.querySelectorAll('#newsFilterBar [data-newsfilter]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#newsFilterBar [data-newsfilter]').forEach((c) => c.classList.remove('active'));
+      chip.classList.add('active');
+      state.newsFilter = chip.getAttribute('data-newsfilter') || 'all';
+      renderNewsFeed();
+      if (state.newsFilter === 'selected' && state.selectedSymbol) {
+        fetchNewsFromServer({ symbol: state.selectedSymbol, forceRefresh: false });
+      }
+    });
+  });
+
+  document.getElementById('btnRefreshNews')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnRefreshNews');
+    const svg = btn?.querySelector('svg');
+    svg?.classList.add('tr-ico-spin');
+    try {
+      await fetchNewsFromServer({
+        symbol: state.newsFilter === 'selected' ? state.selectedSymbol : null,
+        forceRefresh: true
+      });
+    } finally {
+      svg?.classList.remove('tr-ico-spin');
+    }
   });
 
   // Chart Aktionen
@@ -395,7 +452,7 @@ function bindUIEvents() {
     state.tvRsi?.timeScale().fitContent();
   });
 
-  // Tabs (Investments / Historie & Orders / Signale)
+  // Tabs (Investments / Historie & Orders / Signale / News)
   document.querySelectorAll('[data-wbtab]').forEach((tab) => {
     tab.addEventListener('click', () => {
       const target = tab.getAttribute('data-wbtab');
@@ -403,6 +460,28 @@ function bindUIEvents() {
       document.querySelectorAll('.tr-pane, .wb-pane').forEach((p) => p.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(`wbtab-${target}`)?.classList.add('active');
+      if (target === 'news' && (!state.snapshot?.news || state.snapshot.news.length === 0)) {
+        fetchNewsFromServer({ symbol: state.selectedSymbol, forceRefresh: false });
+      }
+    });
+  });
+
+  // Mobile Bottom Navigation
+  document.querySelectorAll('#mobileBottomNav [data-mobnav]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#mobileBottomNav [data-mobnav]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const target = btn.getAttribute('data-mobnav');
+      if (target === 'portfolio') {
+        document.getElementById('demoAccountStrip')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else if (target === 'chart') {
+        document.getElementById('stockDetailCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else if (target === 'watchlist') {
+        document.getElementById('sidebarWatchlistCol')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else if (target === 'news') {
+        document.querySelector('[data-wbtab="news"]')?.click();
+        document.getElementById('wbCardTradesAndAlerts')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     });
   });
 
@@ -523,6 +602,11 @@ function connectWebSocket() {
           state.snapshot.settings = data.settings;
           updateTelegramStatusUI();
         }
+      } else if (data.type === 'NEWS_UPDATED') {
+        if (state.snapshot && Array.isArray(data.news)) {
+          state.snapshot.news = data.news;
+          renderNewsFeed();
+        }
       }
     } catch (err) {
       console.error('WS Fehler:', err);
@@ -606,7 +690,7 @@ function handleDemoLiveTick(data) {
         if (chgEl && Number.isFinite(info.intradayChangePct)) {
           const chg = Number(info.intradayChangePct);
           chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% heute`;
-          chgEl.className = `delta-pill ${chg >= 0 ? 'pos' : 'neg'}`;
+          chgEl.className = `tr-delta ${chg >= 0 ? 'pos' : 'neg'}`;
         }
 
         if (info.lastBar && state.candleSeries && state.chartBars?.length > 0) {
@@ -655,6 +739,16 @@ function applySnapshot(snapshot) {
     document.getElementById('scanStatusText').textContent = `${loadedCount}/${stocks.length} Live (€) · ${t}`;
   }
 
+  const restoreBtn = document.getElementById('btnRestoreWatchlist');
+  if (restoreBtn) {
+    if ((snapshot.hiddenSymbolsCount || 0) > 0) {
+      restoreBtn.classList.remove('hidden');
+      restoreBtn.textContent = `Standard wiederherstellen (${snapshot.hiddenSymbolsCount} ausgeblendet)`;
+    } else {
+      restoreBtn.classList.add('hidden');
+    }
+  }
+
   updateTelegramStatusUI();
   renderDemoAccount();
   renderIndexRegimes();
@@ -662,6 +756,7 @@ function applySnapshot(snapshot) {
   renderStockList();
   renderActiveTradesAndJournal();
   renderAlertsHistory();
+  renderNewsFeed();
 
   if (!state.selectedSymbol && stocks.length > 0) {
     state.selectedSymbol = stocks[0].symbol;
@@ -672,8 +767,13 @@ function applySnapshot(snapshot) {
     if (rec) {
       state.chartRecord = rec;
       renderSelectedStockDetails(rec);
+    } else if (stocks.length > 0) {
+      state.selectedSymbol = stocks[0].symbol;
+      state.chartRecord = stocks[0];
+      renderSelectedStockDetails(stocks[0]);
+      loadChartForSymbol(stocks[0].symbol, false);
     }
-    if (state.chartBars.length === 0) {
+    if (state.chartBars.length === 0 && state.selectedSymbol) {
       loadChartForSymbol(state.selectedSymbol, false);
     }
   }
@@ -899,12 +999,15 @@ function renderStockList() {
   const p3Cnt = stocks.filter((s) => s.analysis?.phase === 3).length;
   const p2Cnt = stocks.filter((s) => s.analysis?.phase === 2).length;
   const dipCnt = stocks.filter((s) => s.intradayChangePct <= -2.0 || s.dipFromSwingHighPct <= -3.8).length;
+  const customCnt = stocks.filter((s) => s.isCustom).length;
 
   document.getElementById('cntAll').textContent = `(${stocks.length})`;
   document.getElementById('cntP4').textContent = p4Cnt ? `(${p4Cnt})` : '';
   document.getElementById('cntP3').textContent = p3Cnt ? `(${p3Cnt})` : '';
   document.getElementById('cntP2').textContent = p2Cnt ? `(${p2Cnt})` : '';
   document.getElementById('cntDips').textContent = dipCnt ? `(${dipCnt})` : '';
+  const cntCustomEl = document.getElementById('cntCustom');
+  if (cntCustomEl) cntCustomEl.textContent = customCnt ? `(${customCnt})` : '';
 
   const filtered = stocks.filter((s) => {
     const phase = s.analysis?.phase ?? 0;
@@ -912,6 +1015,7 @@ function renderStockList() {
     if (state.activeFilter === 'phase3' && phase !== 3) return false;
     if (state.activeFilter === 'phase2' && phase !== 2) return false;
     if (state.activeFilter === 'dips' && s.intradayChangePct > -2.0 && s.dipFromSwingHighPct > -3.8) return false;
+    if (state.activeFilter === 'custom' && !s.isCustom) return false;
 
     if (state.activeRegion && state.activeRegion !== 'ALL') {
       if (s.index !== state.activeRegion) return false;
@@ -966,25 +1070,41 @@ function renderStockList() {
         <div class="sc-left">
           <div class="sc-title-line">
             <span class="sc-sym">${escapeHtml(s.symbol)}</span>
+            ${s.isCustom ? `<span class="tr-custom-tag">EIGENE</span>` : ''}
             ${badgeLabel ? `<span class="phase-tag ${tagClass}">${badgeLabel}</span>` : ''}
           </div>
           <span class="sc-name">${escapeHtml(s.name)}</span>
         </div>
-        <div class="sc-right">
-          <div class="sc-price">${Number(s.price || 0).toFixed(2)} €</div>
-          <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %</div>
+        <div class="sc-right-wrap">
+          <div class="sc-right">
+            <div class="sc-price">${Number(s.price || 0).toFixed(2)} €</div>
+            <div class="sc-chg ${chgCls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %</div>
+          </div>
+          <button class="btn-remove-stock" data-remove-sym="${escapeHtml(s.symbol)}" title="${escapeHtml(s.name)} aus der Überwachung entfernen">
+            ${iconSvg('x')}
+          </button>
         </div>
       </div>`;
     })
     .join('');
 
   container.querySelectorAll('.stock-card').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
+      const rmBtn = e.target.closest('.btn-remove-stock');
+      if (rmBtn) {
+        e.stopPropagation();
+        const rmSym = rmBtn.getAttribute('data-remove-sym');
+        if (rmSym) removeStockFromWatchlist(rmSym);
+        return;
+      }
       const sym = el.getAttribute('data-symbol');
       state.selectedSymbol = sym;
       renderTopRadarStrip();
       renderStockList();
       loadChartForSymbol(sym, false);
+      if (window.innerWidth <= 768) {
+        document.getElementById('stockDetailCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     });
   });
 }
@@ -994,6 +1114,11 @@ function renderStockList() {
 async function loadChartForSymbol(symbol, forceRefresh = false) {
   if (state.ws?.readyState === 1 && symbol) {
     state.ws.send(JSON.stringify({ type: 'WATCH_SYMBOL', symbol }));
+  }
+  const newsSymEl = document.getElementById('newsFilterSym');
+  if (newsSymEl && symbol) newsSymEl.textContent = symbol;
+  if (state.newsFilter === 'selected') {
+    renderNewsFeed();
   }
   try {
     const res = await fetch(`/api/chart/${encodeURIComponent(symbol)}${forceRefresh ? '?refresh=1' : ''}`);
@@ -1438,20 +1563,251 @@ async function runCaseStudySimulation(stage = 'phase4_entry') {
 
 async function addStockFromInput() {
   const input = document.getElementById('inputAddSymbol');
-  const symbol = input.value.trim().toUpperCase();
-  if (!symbol) return;
+  if (!input) return;
+  const val = input.value.trim();
+  if (!val) return;
   input.value = '';
-  const res = await fetch('/api/watchlist', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol })
-  });
-  const data = await res.json();
-  if (data.snapshot) {
-    state.selectedSymbol = symbol;
-    applySnapshot(data.snapshot);
-    loadChartForSymbol(symbol, false);
+  closeSettingsModal();
+  await addStockToWatchlist(val);
+}
+
+async function addStockToWatchlist(symbolOrPayload) {
+  if (!symbolOrPayload) return;
+  const quickInput = document.getElementById('inputWatchlistQuickAdd');
+  const sugBox = document.getElementById('watchlistSearchSuggestions');
+  sugBox?.classList.add('hidden');
+
+  const body = typeof symbolOrPayload === 'string'
+    ? { symbol: symbolOrPayload.trim() }
+    : symbolOrPayload;
+
+  if (!body.symbol) return;
+  if (quickInput) quickInput.value = '';
+
+  const btn = document.getElementById('btnWatchlistQuickAdd');
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.snapshot) {
+      const addedSym = data.stock?.symbol || String(body.symbol).toUpperCase();
+      state.selectedSymbol = addedSym;
+      applySnapshot(data.snapshot);
+      loadChartForSymbol(addedSym, false);
+    }
+  } catch (err) {
+    console.error('Fehler beim Hinzufügen zur Überwachung:', err);
+  } finally {
+    if (btn) btn.disabled = false;
   }
+}
+
+async function removeStockFromWatchlist(symbol) {
+  const clean = String(symbol || '').trim().toUpperCase();
+  if (!clean) return;
+  try {
+    const res = await fetch(`/api/watchlist/${encodeURIComponent(clean)}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (data.snapshot) {
+      if (state.selectedSymbol === clean) {
+        const nextStock = (data.snapshot.stocks || [])[0];
+        state.selectedSymbol = nextStock ? nextStock.symbol : '';
+        state.chartBars = [];
+      }
+      applySnapshot(data.snapshot);
+      if (state.selectedSymbol) {
+        loadChartForSymbol(state.selectedSymbol, false);
+      }
+    }
+  } catch (err) {
+    console.error('Fehler beim Entfernen aus der Überwachung:', err);
+  }
+}
+
+async function restoreDefaultWatchlist() {
+  try {
+    const res = await fetch('/api/watchlist/restore', { method: 'POST' });
+    const data = await res.json();
+    if (data.snapshot) {
+      applySnapshot(data.snapshot);
+    }
+  } catch (err) {
+    console.error('Restore-Fehler:', err);
+  }
+}
+
+function handleWatchlistAutocompleteInput(rawVal) {
+  const q = String(rawVal || '').trim();
+  const sugBox = document.getElementById('watchlistSearchSuggestions');
+  if (!sugBox) return;
+
+  if (state.searchTimer) clearTimeout(state.searchTimer);
+  if (q.length < 2) {
+    sugBox.classList.add('hidden');
+    sugBox.innerHTML = '';
+    return;
+  }
+
+  state.searchTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/watchlist/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const results = data.results || [];
+      if (results.length === 0) {
+        sugBox.classList.add('hidden');
+        return;
+      }
+
+      const watchedSet = new Set((state.snapshot?.stocks || []).map((s) => s.symbol));
+      sugBox.innerHTML = results
+        .map((item) => {
+          const alreadyWatched = watchedSet.has(item.symbol);
+          return `<div class="tr-sug-item" data-sug-sym="${escapeHtml(item.symbol)}" data-sug-name="${escapeHtml(item.name)}" data-sug-index="${escapeHtml(item.index)}" data-sug-sector="${escapeHtml(item.sector)}" data-sug-cur="${escapeHtml(item.currency)}">
+            <div class="tr-sug-left">
+              <span class="tr-sug-sym">${escapeHtml(item.symbol)} · <span style="color:#a1a1aa;font-weight:500">${escapeHtml(item.exchange || item.index)}</span></span>
+              <span class="tr-sug-name">${escapeHtml(item.name)}</span>
+            </div>
+            <span class="tr-sug-meta">${alreadyWatched ? 'Überwacht' : '+ Überwachen'}</span>
+          </div>`;
+        })
+        .join('');
+      sugBox.classList.remove('hidden');
+
+      sugBox.querySelectorAll('.tr-sug-item').forEach((row) => {
+        row.addEventListener('click', () => {
+          addStockToWatchlist({
+            symbol: row.getAttribute('data-sug-sym'),
+            name: row.getAttribute('data-sug-name'),
+            index: row.getAttribute('data-sug-index'),
+            sector: row.getAttribute('data-sug-sector'),
+            currency: row.getAttribute('data-sug-cur')
+          });
+        });
+      });
+    } catch {
+      sugBox.classList.add('hidden');
+    }
+  }, 240);
+}
+
+// --- AUTOMATISCHER NEWS TRACKER ---
+
+async function fetchNewsFromServer({ symbol = null, forceRefresh = false } = {}) {
+  try {
+    const params = new URLSearchParams();
+    if (symbol) params.set('symbol', symbol);
+    if (forceRefresh) params.set('refresh', '1');
+    const res = await fetch(`/api/news?${params.toString()}`);
+    const data = await res.json();
+    if (Array.isArray(data.news) && state.snapshot) {
+      state.snapshot.news = data.news;
+      renderNewsFeed();
+    }
+  } catch (err) {
+    console.error('News-Ladefehler:', err);
+  }
+}
+
+function formatRelativeTimeDe(isoOrTs) {
+  const ts = typeof isoOrTs === 'number' ? isoOrTs * 1000 : new Date(isoOrTs).getTime();
+  if (!Number.isFinite(ts)) return '';
+  const diffMin = Math.max(1, Math.round((Date.now() - ts) / 60000));
+  if (diffMin < 60) return `vor ${diffMin} Min.`;
+  const diffHours = Math.round(diffMin / 60);
+  if (diffHours < 24) return `vor ${diffHours} Std.`;
+  const diffDays = Math.round(diffHours / 24);
+  return `vor ${diffDays} T.`;
+}
+
+function renderNewsFeed() {
+  const container = document.getElementById('newsFeedList');
+  const countBadge = document.getElementById('newsCountBadge');
+  if (!container) return;
+
+  const allNews = state.snapshot?.news || [];
+  if (countBadge) countBadge.textContent = allNews.length;
+
+  const symEl = document.getElementById('newsFilterSym');
+  if (symEl && state.selectedSymbol) symEl.textContent = state.selectedSymbol;
+
+  const openTradeSymbols = new Set((state.snapshot?.activeTrades || []).map((t) => t.symbol));
+  const filtered = allNews.filter((item) => {
+    if (state.newsFilter === 'selected' && state.selectedSymbol) {
+      const matchPrimary = item.symbol === state.selectedSymbol || item.querySymbol === state.selectedSymbol;
+      const matchRel = Array.isArray(item.relatedTickers) && item.relatedTickers.includes(state.selectedSymbol);
+      return matchPrimary || matchRel;
+    }
+    if (state.newsFilter === 'leads') {
+      return (item.phase && item.phase >= 2) || openTradeSymbols.has(item.symbol);
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="padding:24px 14px;text-align:center;color:#71717a;font-size:13px;">
+      Keine aktuellen News für diesen Filter gefunden. Klicke oben rechts auf „Aktualisieren“.
+    </div>`;
+    return;
+  }
+
+  container.innerHTML = filtered
+    .slice(0, 30)
+    .map((n) => {
+      const relTime = formatRelativeTimeDe(n.publishTs || n.publishedAt);
+      const chg = Number(n.intradayChangePct);
+      const hasChg = Number.isFinite(chg);
+      const chgColor = chg >= 0 ? '#00d09c' : '#ff4d4f';
+      const p = n.phase || 0;
+      const phaseBadge = p === 4
+        ? `<span class="phase-tag p4">${iconSvg('dot-p4')} LEAD</span>`
+        : p === 3
+          ? `<span class="phase-tag p3">${iconSvg('bolt')} BODEN</span>`
+          : p === 2
+            ? `<span class="phase-tag p2">${iconSvg('eye')} LOD</span>`
+            : '';
+
+      return `<a href="${escapeHtml(n.link)}" target="_blank" rel="noopener" class="tr-news-row">
+        <div class="tr-news-main">
+          <div class="tr-news-meta">
+            <button type="button" class="tr-news-sym-btn" data-news-sym="${escapeHtml(n.symbol || '')}" title="Aktie im Chart öffnen">
+              ${escapeHtml(n.symbol || 'MARKT')}
+            </button>
+            ${phaseBadge}
+            ${hasChg ? `<span style="color:${chgColor};font-weight:700;">${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %</span>` : ''}
+            <span>·</span>
+            <span>${escapeHtml(n.publisher || 'Finanz-News')}</span>
+            <span>·</span>
+            <span>${escapeHtml(relTime)}</span>
+          </div>
+          <div class="tr-news-title">${escapeHtml(stripEmojis(n.title))}</div>
+        </div>
+        <span class="tr-news-ext">
+          <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+        </span>
+      </a>`;
+    })
+    .join('');
+
+  container.querySelectorAll('.tr-news-sym-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sym = btn.getAttribute('data-news-sym');
+      if (sym) {
+        state.selectedSymbol = sym;
+        renderTopRadarStrip();
+        renderStockList();
+        loadChartForSymbol(sym, false);
+      }
+    });
+  });
 }
 
 // --- SETTINGS MODAL ---

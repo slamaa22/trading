@@ -212,14 +212,49 @@ app.post('/api/demo/toggle', (req, res) => {
   }
 });
 
+app.get('/api/watchlist/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const results = await marketData.searchSymbols(q);
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/api/watchlist', async (req, res) => {
   try {
-    const entry = scanner.addCustomStock(req.body || {});
+    let payload = { ...(req.body || {}) };
+    const rawInput = String(payload.symbol || payload.query || '').trim();
+    if (!rawInput) throw new Error('Bitte Ticker-Symbol oder Aktiennamen eingeben');
+
+    // Falls kein Name übergeben wurde oder ein Firmenname gesucht wird, automatisch per Yahoo Search auflösen
+    if (!payload.name || rawInput.includes(' ') || rawInput.length > 6) {
+      const matches = await marketData.searchSymbols(rawInput);
+      const exact = matches.find((m) => m.symbol.toUpperCase() === rawInput.toUpperCase());
+      const best = exact || matches[0];
+      if (best) {
+        payload = {
+          ...best,
+          ...payload,
+          symbol: best.symbol,
+          name: payload.name || best.name
+        };
+      }
+    }
+
+    const entry = scanner.addCustomStock(payload);
     const quotes = await marketData.fetchBatchQuotes([entry.symbol]);
-    const record = await scanner.evaluateSingleStock(entry, quotes.get(entry.symbol), {
+    const q = quotes.get(entry.symbol);
+    if (q?.shortName && (!entry.name || entry.name === entry.symbol)) {
+      entry.name = q.shortName;
+      scanner.addCustomStock(entry);
+    }
+    const record = await scanner.evaluateSingleStock(entry, q, {
       fetchIntraday: true,
       forceRefresh: true
     });
+    scanner.refreshNewsFeed({ symbol: entry.symbol }).catch(() => {});
     res.json({ ok: true, stock: entry, record, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -232,6 +267,27 @@ app.delete('/api/watchlist/:symbol', (req, res) => {
     res.json({ ok: true, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/watchlist/restore', async (req, res) => {
+  try {
+    scanner.restoreDefaultUniverse();
+    scanner.runFullScan({ reason: 'restore_universe' }).catch(() => {});
+    res.json({ ok: true, snapshot: scanner.getSnapshot() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/news', async (req, res) => {
+  try {
+    const symbol = req.query.symbol ? String(req.query.symbol).trim().toUpperCase() : null;
+    const forceRefresh = req.query.refresh === '1';
+    const news = await scanner.refreshNewsFeed({ symbol, forceRefresh });
+    res.json({ ok: true, news });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

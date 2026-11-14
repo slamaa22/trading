@@ -14,6 +14,7 @@ export class MarketDataService {
     this.quoteCache = new Map();
     this.intradayCache = new Map(); // symbol -> { fetchedAt, bars, meta }
     this.dailyCache = new Map();    // symbol -> { fetchedAt, bars }
+    this.newsCache = new Map();     // query -> { fetchedAt, items }
     this.hostToggle = 0;
   }
 
@@ -236,4 +237,81 @@ export class MarketDataService {
       return cached?.bars || [];
     }
   }
+
+  /**
+   * Sucht nach Aktien-Ticker oder Firmennamen über Yahoo Finance Search API.
+   */
+  async searchSymbols(query = '') {
+    const q = String(query || '').trim();
+    if (!q) return [];
+    try {
+      const host = this.getNextHost();
+      const url = `${host}/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`;
+      const res = await fetch(url, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return (data.quotes || [])
+        .filter((item) => item.symbol && (item.quoteType === 'EQUITY' || item.quoteType === 'ETF'))
+        .map((item) => {
+          const sym = String(item.symbol).toUpperCase();
+          const isDe = sym.endsWith('.DE') || sym.endsWith('.F');
+          const isAt = sym.endsWith('.VI');
+          const isCh = sym.endsWith('.SW');
+          const isEu = sym.endsWith('.PA') || sym.endsWith('.AS') || sym.endsWith('.MI') || sym.endsWith('.MC');
+          return {
+            symbol: sym,
+            name: (item.longname || item.shortname || sym).replace(/\s+/g, ' ').trim(),
+            exchange: item.exchDisp || item.exchange || '',
+            sector: item.sectorDisp || item.industryDisp || 'Aktie',
+            index: isDe ? 'DAX' : isAt ? 'ATX' : isCh ? 'SMI' : isEu ? 'EUROSTOXX' : 'SP500',
+            currency: isCh ? 'CHF' : isDe || isAt || isEu ? 'EUR' : 'USD'
+          };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Ruft aktuelle News zu einem Symbol oder Suchbegriff ab (mit 5-Minuten-Cache).
+   */
+  async fetchNewsForQuery(query = '', { count = 6, forceRefresh = false } = {}) {
+    const q = String(query || '').trim();
+    if (!q) return [];
+    const cached = this.newsCache.get(q);
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+      return cached.items;
+    }
+
+    try {
+      const host = this.getNextHost();
+      const url = `${host}/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=0&newsCount=${count}`;
+      const res = await fetch(url, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!res.ok) return cached?.items || [];
+      const data = await res.json();
+      const items = (data.news || [])
+        .filter((n) => n.title && n.link)
+        .map((n) => ({
+          id: n.uuid || `${q}_${n.providerPublishTime || Date.now()}`,
+          title: String(n.title).trim(),
+          publisher: n.publisher || 'Markt-News',
+          link: n.link,
+          publishedAt: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : new Date().toISOString(),
+          publishTs: Number(n.providerPublishTime || Math.floor(Date.now() / 1000)),
+          relatedTickers: Array.isArray(n.relatedTickers) ? n.relatedTickers : [],
+          querySymbol: q
+        }));
+      this.newsCache.set(q, { fetchedAt: Date.now(), items });
+      return items;
+    } catch {
+      return cached?.items || [];
+    }
+  }
 }
+

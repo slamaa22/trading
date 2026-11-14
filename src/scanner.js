@@ -82,6 +82,8 @@ export class StrategyScanner {
     this.indexRegimes = {};
     this.stockResults = new Map();
     this.m10Store = new Map();
+    this.newsItems = [];
+    this.newsTimer = null;
   }
 
   loadState() {
@@ -115,6 +117,7 @@ export class StrategyScanner {
           settings: mergedSettings,
           demoAccount: mergedDemo,
           customStocks: Array.isArray(raw.customStocks) ? raw.customStocks : [],
+          hiddenSymbols: Array.isArray(raw.hiddenSymbols) ? raw.hiddenSymbols : [],
           activeTrades: Array.isArray(raw.activeTrades) ? raw.activeTrades : [],
           journal: Array.isArray(raw.journal) ? raw.journal : []
         };
@@ -130,6 +133,7 @@ export class StrategyScanner {
         orderHistory: []
       },
       customStocks: [],
+      hiddenSymbols: [],
       activeTrades: [],
       journal: []
     };
@@ -164,45 +168,197 @@ export class StrategyScanner {
   }
 
   getUniverse() {
+    const hidden = new Set(
+      (this.state.hiddenSymbols || []).map((s) => String(s).toUpperCase())
+    );
     const map = new Map();
-    for (const s of DEFAULT_UNIVERSE) map.set(s.symbol, s);
-    for (const c of this.state.customStocks) map.set(c.symbol, c);
+    for (const s of DEFAULT_UNIVERSE) {
+      if (!hidden.has(s.symbol)) {
+        map.set(s.symbol, s);
+      }
+    }
+    for (const c of this.state.customStocks) {
+      if (!hidden.has(c.symbol)) {
+        map.set(c.symbol, c);
+      }
+    }
     return Array.from(map.values());
   }
 
   addCustomStock(stock) {
     const symbol = String(stock.symbol || '').trim().toUpperCase();
     if (!symbol) throw new Error('Symbol fehlt');
+
+    // Falls es eine ausgeblendete Standard-Aktie war, einfach wieder einblenden
+    this.state.hiddenSymbols = (this.state.hiddenSymbols || []).filter(
+      (s) => String(s).toUpperCase() !== symbol
+    );
+
+    const defaultMatch = DEFAULT_UNIVERSE.find((d) => d.symbol === symbol);
+    if (defaultMatch && !stock.name) {
+      this.saveState();
+      return defaultMatch;
+    }
+
+    const isDe = symbol.endsWith('.DE') || symbol.endsWith('.F');
+    const isAt = symbol.endsWith('.VI');
+    const isCh = symbol.endsWith('.SW');
+    const isEu = symbol.endsWith('.PA') || symbol.endsWith('.AS') || symbol.endsWith('.MI') || symbol.endsWith('.MC');
+
     const entry = {
       symbol,
-      name: stock.name || symbol,
-      index: stock.index || (symbol.includes('.') ? 'DAX' : 'SP500'),
-      sector: stock.sector || 'Watchlist',
-      profile: stock.profile || 'conservative',
-      currency: stock.currency || (symbol.endsWith('.SW') ? 'CHF' : symbol.includes('.') ? 'EUR' : 'USD'),
-      isCustom: true
+      name: stock.name || defaultMatch?.name || symbol,
+      index: stock.index || defaultMatch?.index || (isDe ? 'DAX' : isAt ? 'ATX' : isCh ? 'SMI' : isEu ? 'EUROSTOXX' : 'SP500'),
+      sector: stock.sector || defaultMatch?.sector || 'Watchlist',
+      profile: stock.profile || defaultMatch?.profile || 'conservative',
+      currency: stock.currency || defaultMatch?.currency || (isCh ? 'CHF' : isDe || isAt || isEu ? 'EUR' : 'USD'),
+      isCustom: !defaultMatch
     };
-    this.state.customStocks = [
-      ...this.state.customStocks.filter((s) => s.symbol !== symbol),
-      entry
-    ];
+    if (!defaultMatch) {
+      this.state.customStocks = [
+        ...this.state.customStocks.filter((s) => s.symbol !== symbol),
+        entry
+      ];
+    }
     this.saveState();
     return entry;
   }
 
   removeCustomStock(symbol) {
     const clean = String(symbol || '').trim().toUpperCase();
+    if (!clean) return;
     this.state.customStocks = this.state.customStocks.filter((s) => s.symbol !== clean);
+    const inDefault = DEFAULT_UNIVERSE.some((s) => s.symbol === clean);
+    if (inDefault) {
+      const hidden = new Set(this.state.hiddenSymbols || []);
+      hidden.add(clean);
+      this.state.hiddenSymbols = Array.from(hidden);
+    }
     this.stockResults.delete(clean);
+    this.m10Store.delete(clean);
+    this.saveState();
+  }
+
+  restoreDefaultUniverse() {
+    this.state.hiddenSymbols = [];
     this.saveState();
   }
 
   startAutoScan() {
     this.restartAutoScan();
     this.startDemoLiveTicker();
-    this.runFullScan({ reason: 'initial' }).catch((err) => {
-      console.error('Initialer Scan-Fehler:', err.message);
-    });
+    this.startNewsTracker();
+    this.runFullScan({ reason: 'initial' })
+      .then(() => this.refreshNewsFeed({ forceRefresh: true }))
+      .catch((err) => {
+        console.error('Initialer Scan-Fehler:', err.message);
+      });
+  }
+
+  startNewsTracker() {
+    if (this.newsTimer) clearInterval(this.newsTimer);
+    // Initial direkt nach Start abrufen + alle 3 Minuten automatisch aktualisieren
+    setTimeout(() => {
+      this.refreshNewsFeed().catch(() => {});
+    }, 2500);
+    this.newsTimer = setInterval(() => {
+      this.refreshNewsFeed().catch((err) => {
+        console.error('News-Tracker Fehler:', err.message);
+      });
+    }, 3 * 60 * 1000);
+  }
+
+  async refreshNewsFeed({ symbol = null, forceRefresh = false } = {}) {
+    try {
+      const queries = new Set();
+
+      if (symbol) {
+        queries.add(String(symbol).trim().toUpperCase());
+      }
+
+      // 1. Ausgewählte / beobachtete Symbole
+      for (const wSym of this.watchedSymbols.values()) {
+        if (wSym) queries.add(wSym);
+      }
+
+      // 2. Offene Demo-Positionen
+      for (const t of this.state.activeTrades) {
+        if (t.status === 'OPEN' && t.symbol) queries.add(t.symbol);
+      }
+
+      // 3. Top Signale (Phase >= 2) & stärkste Intraday-Dips aus der Überwachung
+      const allStocks = Array.from(this.stockResults.values());
+      const topSignalStocks = [...allStocks]
+        .sort((a, b) => {
+          const pa = a.analysis?.phase ?? 0;
+          const pb = b.analysis?.phase ?? 0;
+          if (pb !== pa) return pb - pa;
+          return (a.intradayChangePct || 0) - (b.intradayChangePct || 0);
+        })
+        .slice(0, 6);
+
+      for (const s of topSignalStocks) {
+        if (s.symbol) queries.add(s.symbol);
+      }
+
+      // Fallback falls noch kein Scan durchlief
+      if (queries.size === 0) {
+        ['SY1.DE', 'SAP.DE', 'NVDA', 'AAPL', 'MSFT'].forEach((q) => queries.add(q));
+      }
+
+      const targetQueries = Array.from(queries).slice(0, 8);
+      const universeMap = new Map(this.getUniverse().map((u) => [u.symbol, u]));
+      const collected = [];
+      const seenIds = new Set();
+
+      const results = await Promise.all(
+        targetQueries.map((q) =>
+          this.marketData.fetchNewsForQuery(q, { count: 5, forceRefresh })
+        )
+      );
+
+      for (const list of results) {
+        for (const item of list) {
+          const key = item.id || item.link || item.title;
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+
+          // Ordne passendes überwachtes Aktien-Metadatum zu
+          let matchedStock = universeMap.get(item.querySymbol);
+          if (!matchedStock && Array.isArray(item.relatedTickers)) {
+            for (const rt of item.relatedTickers) {
+              if (universeMap.has(rt)) {
+                matchedStock = universeMap.get(rt);
+                break;
+              }
+            }
+          }
+          const stockRec = matchedStock ? this.stockResults.get(matchedStock.symbol) : null;
+
+          collected.push({
+            ...item,
+            symbol: matchedStock?.symbol || item.querySymbol,
+            stockName: matchedStock?.name || item.querySymbol,
+            phase: stockRec?.analysis?.phase ?? 0,
+            intradayChangePct: stockRec?.intradayChangePct ?? null,
+            priceEur: stockRec?.price ?? null
+          });
+        }
+      }
+
+      collected.sort((a, b) => (b.publishTs || 0) - (a.publishTs || 0));
+      this.newsItems = collected.slice(0, 35);
+
+      this.notifier.broadcastWs({
+        type: 'NEWS_UPDATED',
+        news: this.newsItems
+      });
+
+      return this.newsItems;
+    } catch (err) {
+      console.error('News-Abruf Fehler:', err.message);
+      return this.newsItems;
+    }
   }
 
   setWatchedSymbol(clientId, symbol) {
@@ -1298,7 +1454,9 @@ export class StrategyScanner {
       stocks,
       activeTrades: this.state.activeTrades,
       journal: this.state.journal,
-      alerts: this.notifier.alertHistory
+      alerts: this.notifier.alertHistory,
+      news: this.newsItems || [],
+      hiddenSymbolsCount: (this.state.hiddenSymbols || []).length
     };
   }
 }

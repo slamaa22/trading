@@ -111,7 +111,7 @@
         </div>
       </div>
 
-      <!-- INVESTMENTS / ORDERBOOK / ALERTS TABS -->
+      <!-- INVESTMENTS / ORDERBOOK / ALERTS / NEWS TABS -->
       <div class="tr-card tr-positions-card" id="wbCardTradesAndAlerts">
         <div class="tr-tabs">
           <button class="tr-tab active" data-wbtab="trades">
@@ -129,6 +129,11 @@
             <span>Signale</span>
             <span class="tr-count" id="alertsCount">0</span>
           </button>
+          <button class="tr-tab" data-wbtab="news">
+            <svg class="tr-ico" viewBox="0 0 24 24"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
+            <span>News</span>
+            <span class="tr-count" id="newsCountBadge">0</span>
+          </button>
         </div>
 
         <!-- TAB 1: OPEN INVESTMENTS -->
@@ -145,10 +150,33 @@
         <div class="tr-pane" id="wbtab-alerts">
           <div id="alertsHistoryList" class="tr-list"></div>
         </div>
+
+        <!-- TAB 4: LIVE NEWS TRACKER -->
+        <div class="tr-pane" id="wbtab-news">
+          <div class="tr-news-toolbar">
+            <div class="tr-news-filters" id="newsFilterBar">
+              <button class="tr-filter-chip active" data-newsfilter="all">
+                <span>Alle Überwachten</span>
+              </button>
+              <button class="tr-filter-chip" data-newsfilter="selected">
+                <span>Aktuelle Aktie (<b id="newsFilterSym">SY1.DE</b>)</span>
+              </button>
+              <button class="tr-filter-chip" data-newsfilter="leads">
+                <span class="tr-dot-ind p4"></span>
+                <span>Nur Signale &amp; Positionen</span>
+              </button>
+            </div>
+            <button class="tr-chip-btn tr-btn-icon-text" id="btnRefreshNews" title="News jetzt aktualisieren">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+              <span>Aktualisieren</span>
+            </button>
+          </div>
+          <div id="newsFeedList" class="tr-list tr-news-list"></div>
+        </div>
       </div>
 
       <!-- SELECTED STOCK DETAIL & CLEAN CHART -->
-      <div class="tr-card tr-stock-detail-card">
+      <div class="tr-card tr-stock-detail-card" id="stockDetailCard">
         <div class="tr-stock-header">
           <div class="tr-stock-title-group">
             <div class="tr-stock-badges">
@@ -157,6 +185,10 @@
               <span class="tr-meta-pill" id="detailMarketHours">Markt</span>
               <span class="tr-meta-pill" id="detailPeBadge">KGV --</span>
               <span class="tr-phase-pill" id="detailPhaseBadge">NEUTRAL</span>
+              <button class="tr-remove-watch-pill" id="btnRemoveSelectedStock" title="Diese Aktie aus der Überwachung entfernen">
+                <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                <span>Aus Überwachung nehmen</span>
+              </button>
             </div>
             <h2 class="tr-stock-name" id="detailStockName">Symrise AG</h2>
           </div>
@@ -260,8 +292,8 @@
       </div>
     </section>
 
-    <!-- RIGHT COLUMN: TOP SIGNALS & WATCHLIST (196 STOCKS) -->
-    <aside class="tr-col-sidebar">
+    <!-- RIGHT COLUMN: TOP SIGNALS & WATCHLIST -->
+    <aside class="tr-col-sidebar" id="sidebarWatchlistCol">
       <!-- TOP LEADS / MOVERS -->
       <div class="tr-card tr-radar-card">
         <div class="tr-section-header">
@@ -274,13 +306,38 @@
         <div class="tr-radar-list" id="topRadarGrid"></div>
       </div>
 
-      <!-- ALL STOCKS SEARCH & FILTER -->
+      <!-- ALL STOCKS SEARCH, ADD/REMOVE & FILTER -->
       <div class="tr-card tr-watchlist-card">
+        <div class="tr-section-header">
+          <h3 class="tr-heading-icon">
+            <svg class="tr-ico" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Überwachte Aktien</span>
+          </h3>
+          <button class="tr-link-btn hidden" id="btnRestoreWatchlist" title="Alle entfernten Standard-Aktien wiederherstellen">
+            Standard wiederherstellen
+          </button>
+        </div>
+
+        <!-- DIREKTES HINZUFÜGEN IN DIE ÜBERWACHUNG (MIT LIVE-AUTOCOMPLETE) -->
+        <div class="tr-watch-add-wrap">
+          <div class="tr-watch-add-row">
+            <div class="tr-search-input-wrap" style="flex:1;">
+              <svg class="tr-ico tr-search-ico" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              <input type="text" id="inputWatchlistQuickAdd" placeholder="Aktie zur Überwachung hinzufügen (z.B. Palantir, PLTR, Tesla)..." autocomplete="off" />
+            </div>
+            <button class="tr-chip-btn tr-btn-icon-text" id="btnWatchlistQuickAdd">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              <span>Hinzufügen</span>
+            </button>
+          </div>
+          <div id="watchlistSearchSuggestions" class="tr-search-suggestions hidden"></div>
+        </div>
+
         <div class="tr-watchlist-controls">
           <div class="tr-search-row">
             <div class="tr-search-input-wrap">
               <svg class="tr-ico tr-search-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-              <input type="text" id="inputSearchStock" placeholder="Suchen (Name, Symbol, Sektor)..." />
+              <input type="text" id="inputSearchStock" placeholder="In Überwachung filtern..." />
             </div>
             <select id="selectSortStocks" title="Sortierung">
               <option value="phase">Signale zuerst</option>
@@ -310,6 +367,9 @@
               <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
               <span>Dips</span> <span id="cntDips"></span>
             </button>
+            <button class="tr-filter-chip" data-filter="custom">
+              <span>Eigene</span> <span id="cntCustom"></span>
+            </button>
           </div>
 
           <div class="tr-region-row" id="regionFilterTabs">
@@ -328,6 +388,26 @@
       </div>
     </aside>
   </main>
+
+  <!-- MOBILE BOTTOM NAVIGATION BAR (TRADE REPUBLIC APP STYLE) -->
+  <nav class="tr-mobile-nav" id="mobileBottomNav">
+    <button class="tr-mob-btn active" data-mobnav="portfolio">
+      <svg class="tr-ico" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="7" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+      <span>Portfolio</span>
+    </button>
+    <button class="tr-mob-btn" data-mobnav="chart">
+      <svg class="tr-ico" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+      <span>Chart</span>
+    </button>
+    <button class="tr-mob-btn" data-mobnav="watchlist">
+      <svg class="tr-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <span>Überwachung</span>
+    </button>
+    <button class="tr-mob-btn" data-mobnav="news">
+      <svg class="tr-ico" viewBox="0 0 24 24"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/></svg>
+      <span>News</span>
+    </button>
+  </nav>
 
   <!-- CLEAN SETTINGS & SIMULATION MODAL -->
   <div class="modal-backdrop hidden" id="settingsModal">
