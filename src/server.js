@@ -196,6 +196,13 @@ app.post('/api/simulate-case-study', async (req, res) => {
 app.post('/api/demo/reset', (req, res) => {
   try {
     const initialBalanceEuro = Number(req.body?.initialBalanceEuro || 10000);
+    const account = String(req.body?.account || 'main').toLowerCase();
+    const resyncFromMain = Boolean(req.body?.resyncFromMain);
+    if (account === 'reverse') {
+      const reverseDemoAccount = scanner.resetReverseDemoAccount(initialBalanceEuro, resyncFromMain);
+      res.json({ ok: true, reverseDemoAccount, snapshot: scanner.getSnapshot() });
+      return;
+    }
     const demoAccount = scanner.resetDemoAccount(initialBalanceEuro);
     res.json({ ok: true, demoAccount, snapshot: scanner.getSnapshot() });
   } catch (err) {
@@ -205,6 +212,12 @@ app.post('/api/demo/reset', (req, res) => {
 
 app.post('/api/demo/toggle', (req, res) => {
   try {
+    const account = String(req.body?.account || 'main').toLowerCase();
+    if (account === 'reverse') {
+      const reverseDemoAccount = scanner.toggleReverseDemoAutoTrade(Boolean(req.body?.autoTradeEnabled));
+      res.json({ ok: true, reverseDemoAccount, snapshot: scanner.getSnapshot() });
+      return;
+    }
     const demoAccount = scanner.toggleDemoAutoTrade(Boolean(req.body?.autoTradeEnabled));
     res.json({ ok: true, demoAccount, snapshot: scanner.getSnapshot() });
   } catch (err) {
@@ -293,7 +306,10 @@ app.get('/api/news', async (req, res) => {
 
 app.post('/api/trades', (req, res) => {
   try {
-    const trade = scanner.openActiveTrade(req.body || {});
+    const account = String(req.body?.account || 'main').toLowerCase();
+    const trade = account === 'reverse'
+      ? scanner.openReverseActiveTrade(req.body || {})
+      : scanner.openActiveTrade(req.body || {});
     res.json({ ok: true, trade, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -305,17 +321,22 @@ app.get('/api/demo/live', (req, res) => {
     serverTime: new Date().toISOString(),
     demoAccount: scanner.getDemoMetrics(),
     activeTrades: scanner.state.activeTrades,
-    journal: scanner.state.journal.slice(0, 20)
+    journal: scanner.state.journal.slice(0, 20),
+    reverseDemoAccount: scanner.getReverseDemoMetrics(),
+    reverseActiveTrades: scanner.state.reverseActiveTrades,
+    reverseJournal: scanner.state.reverseJournal.slice(0, 20)
   });
 });
 
 app.post('/api/trades/:id/close', (req, res) => {
   try {
-    const journalEntry = scanner.closeActiveTrade(
-      req.params.id,
-      req.body.exitPrice,
-      req.body.exitReason
-    );
+    const tradeId = String(req.params.id || '');
+    const isReverse = req.body?.account === 'reverse' ||
+      tradeId.startsWith('rev_') ||
+      scanner.state.reverseActiveTrades.some((t) => t.id === tradeId);
+    const journalEntry = isReverse
+      ? scanner.closeReverseActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason)
+      : scanner.closeActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason);
     res.json({ ok: true, journalEntry, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });

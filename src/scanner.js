@@ -13,6 +13,7 @@ import {
   analyzeM10BottomFormation,
   calculateRiskAndPositionSizing,
   evaluateActiveTrade,
+  evaluateReverseActiveTrade,
   buildPreTradeChecklist,
   generatePlaybookCaseStudyBars
 } from './strategy.js';
@@ -84,6 +85,155 @@ export class StrategyScanner {
     this.m10Store = new Map();
     this.newsItems = [];
     this.newsTimer = null;
+
+    this.ensureReverseAccountBackfilled();
+  }
+
+  /**
+   * Falls Account 2 (Reverse-Strategie / Turbo-Short) neu angelegt wurde und noch keine Trades hat,
+   * aber Account 1 bereits historische/offene Trades besitzt, spiegeln wir diese als echten A/B-Test-Vergleich
+   * (jeder Long-Einstieg von Account 1 als entgegengesetzter Short-Trade in Account 2).
+   */
+  ensureReverseAccountBackfilled() {
+    const revDemo = this.state.reverseDemoAccount;
+    const revTrades = this.state.reverseActiveTrades || [];
+    const revJournal = this.state.reverseJournal || [];
+    const mainJournal = this.state.journal || [];
+    const mainActive = this.state.activeTrades || [];
+
+    if (
+      revDemo &&
+      revTrades.length === 0 &&
+      revJournal.length === 0 &&
+      (mainJournal.length > 0 || mainActive.length > 0)
+    ) {
+      this.syncReverseFromMainHistory();
+    }
+  }
+
+  syncReverseFromMainHistory() {
+    const startCap = Number(this.state.demoAccount?.initialBalanceEuro || 10000);
+    const mainJournalChrono = [...(this.state.journal || [])].reverse();
+    const newRevJournal = [];
+    const newOrderHistory = [];
+    const newEquityCurve = [
+      {
+        time: new Date().toISOString(),
+        equityEuro: startCap,
+        label: 'Startkapital (Reverse)'
+      }
+    ];
+
+    let realizedPnl = 0;
+    let wins = 0;
+    let losses = 0;
+
+    for (const j of mainJournalChrono) {
+      const entryPrice = Number(j.entryPrice || 100);
+      const exitPrice = Number(j.exitPrice || entryPrice);
+      const origStop = Number(j.stopLossStock || entryPrice * 0.985);
+      const riskAbs = Math.max(0.01, Math.abs(entryPrice - origStop));
+      const shortStopStock = Math.round((entryPrice + riskAbs) * 100) / 100;
+      const leverage = Number(j.leverage || 8);
+      const posEuro = Number(j.positionSizeEuro || 1500);
+
+      // Beim Reverse/Short-Trade ist die Kursänderung invertiert: (entryPrice - exitPrice) / entryPrice
+      const stockGainPct = ((entryPrice - exitPrice) / entryPrice) * 100;
+      const derivGainPct = Math.max(-99, stockGainPct * leverage);
+      const pnlEuro = Math.round(posEuro * (derivGainPct / 100) * 100) / 100;
+      const payoutEuro = Math.max(0, Math.round((posEuro + pnlEuro) * 100) / 100);
+      const rMultiple = (entryPrice - exitPrice) / riskAbs;
+
+      realizedPnl = Math.round((realizedPnl + pnlEuro) * 100) / 100;
+      if (pnlEuro >= 0) wins++;
+      else losses++;
+
+      const eqAfter = Math.round((startCap + realizedPnl) * 100) / 100;
+
+      const revEntry = {
+        ...j,
+        id: `rev_${j.id || Date.now()}`,
+        direction: 'SHORT',
+        strategyMode: 'REVERSE',
+        stopLossStock: shortStopStock,
+        payoutEuro,
+        stockGainPct: Math.round(stockGainPct * 100) / 100,
+        derivGainPct: Math.round(derivGainPct * 10) / 10,
+        pnlEuro,
+        rMultiple: Math.round(rMultiple * 100) / 100,
+        demoEquityAfterEuro: eqAfter,
+        exitReason: pnlEuro >= 0
+          ? `Reverse Take-Profit (Gegenseite zu Account 1)`
+          : `Reverse Stop-Loss (Gegenseite zu Account 1)`
+      };
+
+      newRevJournal.unshift(revEntry);
+      newEquityCurve.push({
+        time: j.closedAt || new Date().toISOString(),
+        equityEuro: eqAfter,
+        pnlEuro,
+        label: `${j.symbol} Short (${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} €)`
+      });
+      newOrderHistory.unshift({
+        id: `rev_ord_${j.id || Date.now()}`,
+        action: 'SELL',
+        timestamp: j.closedAt || new Date().toISOString(),
+        time: j.closedAt || new Date().toISOString(),
+        side: pnlEuro >= 0 ? 'CLOSE SHORT (PROFIT)' : 'CLOSE SHORT (LOSS)',
+        symbol: j.symbol,
+        name: j.name,
+        entryPriceEuro: entryPrice,
+        exitPriceEuro: exitPrice,
+        stockPriceEuro: exitPrice,
+        leverage,
+        payoutEuro,
+        amountEuro: payoutEuro,
+        pnlEuro,
+        derivGainPct: revEntry.derivGainPct,
+        rMultiple: revEntry.rMultiple,
+        note: revEntry.exitReason
+      });
+    }
+
+    // Spiegele auch aktuell offene Positionen aus Account 1 als offene Short-Positionen in Account 2
+    const newRevActive = [];
+    let investedInOpen = 0;
+    for (const t of this.state.activeTrades || []) {
+      if (t.status !== 'OPEN') continue;
+      const entryPrice = Number(t.entryPrice || 100);
+      const origStop = Number(t.stopLossStock || entryPrice * 0.985);
+      const riskAbs = Math.max(0.01, Math.abs(entryPrice - origStop));
+      const shortStopStock = Math.round((entryPrice + riskAbs) * 100) / 100;
+      const posEuro = Number(t.positionSizeEuro || 1500);
+      investedInOpen += posEuro;
+
+      newRevActive.push({
+        ...t,
+        id: `rev_${t.id}`,
+        direction: 'SHORT',
+        strategyMode: 'REVERSE',
+        stopLossStock: shortStopStock,
+        catalystNote: 'Reverse-Strategie (Turbo-Short gegen Phase-4-Lead)',
+        latestEvaluation: null
+      });
+    }
+
+    const totalCurrentBalance = Math.max(0, Math.round((startCap + realizedPnl - investedInOpen) * 100) / 100);
+
+    this.state.reverseJournal = newRevJournal;
+    this.state.reverseActiveTrades = newRevActive;
+    this.state.reverseDemoAccount = {
+      autoTradeEnabled: true,
+      initialBalanceEuro: startCap,
+      cashEuro: totalCurrentBalance,
+      realizedPnlEuro: realizedPnl,
+      totalTrades: mainJournalChrono.length,
+      wins,
+      losses,
+      equityCurve: newEquityCurve.slice(-60),
+      orderHistory: newOrderHistory.slice(0, 50)
+    };
+    this.saveState();
   }
 
   loadState() {
@@ -113,13 +263,26 @@ export class StrategyScanner {
             ? raw.demoAccount.orderHistory
             : []
         };
+        const mergedReverseDemo = {
+          ...DEFAULT_DEMO_ACCOUNT,
+          ...(raw.reverseDemoAccount || {}),
+          equityCurve: Array.isArray(raw.reverseDemoAccount?.equityCurve) && raw.reverseDemoAccount.equityCurve.length > 0
+            ? raw.reverseDemoAccount.equityCurve
+            : [...DEFAULT_DEMO_ACCOUNT.equityCurve],
+          orderHistory: Array.isArray(raw.reverseDemoAccount?.orderHistory)
+            ? raw.reverseDemoAccount.orderHistory
+            : []
+        };
         return {
           settings: mergedSettings,
           demoAccount: mergedDemo,
+          reverseDemoAccount: mergedReverseDemo,
           customStocks: Array.isArray(raw.customStocks) ? raw.customStocks : [],
           hiddenSymbols: Array.isArray(raw.hiddenSymbols) ? raw.hiddenSymbols : [],
           activeTrades: Array.isArray(raw.activeTrades) ? raw.activeTrades : [],
-          journal: Array.isArray(raw.journal) ? raw.journal : []
+          journal: Array.isArray(raw.journal) ? raw.journal : [],
+          reverseActiveTrades: Array.isArray(raw.reverseActiveTrades) ? raw.reverseActiveTrades : [],
+          reverseJournal: Array.isArray(raw.reverseJournal) ? raw.reverseJournal : []
         };
       }
     } catch {
@@ -132,10 +295,17 @@ export class StrategyScanner {
         equityCurve: [...DEFAULT_DEMO_ACCOUNT.equityCurve],
         orderHistory: []
       },
+      reverseDemoAccount: {
+        ...DEFAULT_DEMO_ACCOUNT,
+        equityCurve: [...DEFAULT_DEMO_ACCOUNT.equityCurve],
+        orderHistory: []
+      },
       customStocks: [],
       hiddenSymbols: [],
       activeTrades: [],
-      journal: []
+      journal: [],
+      reverseActiveTrades: [],
+      reverseJournal: []
     };
   }
 
@@ -389,9 +559,13 @@ export class StrategyScanner {
 
     try {
       const openTrades = this.state.activeTrades.filter((t) => t.status === 'OPEN');
+      const openReverseTrades = (this.state.reverseActiveTrades || []).filter((t) => t.status === 'OPEN');
       const liveSymbolSet = new Set();
 
       for (const t of openTrades) {
+        if (t.symbol) liveSymbolSet.add(t.symbol);
+      }
+      for (const t of openReverseTrades) {
         if (t.symbol) liveSymbolSet.add(t.symbol);
       }
       for (const sym of this.watchedSymbols.values()) {
@@ -400,7 +574,9 @@ export class StrategyScanner {
 
       const livePrices = {};
       const targetSymbols = Array.from(liveSymbolSet).slice(0, 15);
-      const shouldFetch = targetSymbols.length > 0 && (openTrades.length > 0 || this.notifier.wsClients.size > 0);
+      const shouldFetch =
+        targetSymbols.length > 0 &&
+        (openTrades.length > 0 || openReverseTrades.length > 0 || this.notifier.wsClients.size > 0);
 
       if (shouldFetch) {
         try {
@@ -449,7 +625,7 @@ export class StrategyScanner {
         }
       }
 
-      if (openTrades.length > 0) {
+      if (openTrades.length > 0 || openReverseTrades.length > 0) {
         await this.evaluateAllActiveTrades();
       }
 
@@ -458,8 +634,11 @@ export class StrategyScanner {
           type: 'DEMO_LIVE_TICK',
           serverTime: new Date().toISOString(),
           demoAccount: this.getDemoMetrics(),
+          reverseDemoAccount: this.getReverseDemoMetrics(),
           activeTrades: this.state.activeTrades,
           journal: this.state.journal.slice(0, 20),
+          reverseActiveTrades: this.state.reverseActiveTrades || [],
+          reverseJournal: (this.state.reverseJournal || []).slice(0, 20),
           livePrices
         });
       }
@@ -794,6 +973,32 @@ export class StrategyScanner {
           });
         }
 
+        // ACCOUNT 2 (REVERSE STRATEGIE): Wenn Account 1 Long geht, geht Account 2 automatisch Short!
+        const alreadyOpenRev = (this.state.reverseActiveTrades || []).some(
+          (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
+        );
+        if (
+          !alreadyOpenRev &&
+          this.state.reverseDemoAccount?.autoTradeEnabled !== false &&
+          Number(this.state.reverseDemoAccount?.cashEuro || 0) >= 250
+        ) {
+          this.openReverseActiveTrade({
+            symbol: stockMeta.symbol,
+            name: stockMeta.name,
+            currency: '€',
+            isDemoAuto: true,
+            entryPrice: fullRecord.exactPriceEur || fullRecord.price,
+            lodPrice: analysis.lodPrice,
+            origStopLossStock: sizing.stopLossStock,
+            leverage: sizing.activeLeverage,
+            positionSizeEuro: sizing.positionSizeEuro,
+            quantityPieces: sizing.quantityPieces,
+            certEntryPrice: sizing.modelCertEntryPrice,
+            certStopPrice: sizing.modelCertStopPrice,
+            catalystNote: 'Auto-Reverse Account #2 (Turbo-Short gegen Phase-4-Lead)'
+          });
+        }
+
         await this.notifier.dispatchSimultaneousAlert({
           kind: 'STRATEGY_SIGNAL',
           symbol: stockMeta.symbol,
@@ -806,7 +1011,7 @@ export class StrategyScanner {
             ? `NEUER LEAD & DEMO-KAUF: ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`
             : `NEUER LEAD (ENTRY): ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`,
           message: openedDemoTrade
-            ? `${analysis.actionText} — Demo-Account hat automatisch für ${openedDemoTrade.positionSizeEuro.toFixed(0)} € (${sizing.activeLeverage}x Long) gekauft und überwacht den Exit!`
+            ? `${analysis.actionText} — Demo-Account #1 (Long) & Account #2 (Reverse Short) haben automatisch getradet!`
             : `${analysis.actionText} — Empfohlene Position: ${sizing.positionSizeEuro.toFixed(0)} € (${sizing.activeLeverage}x Long).`,
           price: fullRecord.price,
           lodPrice: analysis.lodPrice,
@@ -833,10 +1038,7 @@ export class StrategyScanner {
   }
 
   /**
-   * Überwacht alle offenen Leads/Trades des Demo-Accounts:
-   * - Bei Stufe 2 (>= 1.5R) wird der Stop-Loss im Demo-Account automatisch auf Break-Even (+0,1%) nachgezogen (lautlos ohne Spam).
-   * - Sobald das Close-Signal (Stagnations-Exit, Stop-Loss oder EOD/Börsenschluss) erreicht wird, verkauft der Demo-Account automatisch,
-   *   bucht Gewinn/Verlust in € auf das Demo-Konto und sendet sofort die Close-Benachrichtigung (Web + Telegram)!
+   * Überwacht alle offenen Leads/Trades des Demo-Accounts (Account 1 Long + Account 2 Reverse Short):
    */
   async evaluateAllActiveTrades() {
     // Kopie des Arrays, da closeActiveTrade Elemente aus this.state.activeTrades entfernt
@@ -927,6 +1129,48 @@ export class StrategyScanner {
             : `🏁 LEAD GECLOSED (${isEodClose ? 'BÖRSENSCHLUSS' : 'TAKE-PROFIT'}): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
           message: `${exitReason} — Demo-Account Kontostand: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
         });
+      }
+    }
+
+    // --- ACCOUNT 2: REVERSE-STRATEGIE (TURBO-SHORT) ÜBERWACHUNG ---
+    const openReverseTrades = [...(this.state.reverseActiveTrades || [])].filter((t) => t.status === 'OPEN');
+    for (const rTrade of openReverseTrades) {
+      const m10Bars = this.m10Store.get(rTrade.symbol);
+      if (!m10Bars || m10Bars.length === 0) continue;
+
+      const stockRecord = this.stockResults.get(rTrade.symbol);
+      const stockMeta = DEFAULT_UNIVERSE.find((u) => u.symbol === rTrade.symbol);
+      const idxInfo = BENCHMARK_INDICES[stockRecord?.index || stockMeta?.index] || BENCHMARK_INDICES.DAX;
+      const liveClock = checkReferenceMarketOpen(stockRecord?.region || idxInfo.region);
+
+      const revEval = evaluateReverseActiveTrade(rTrade, m10Bars, liveClock);
+      if (!revEval) continue;
+
+      rTrade.latestEvaluation = revEval;
+      rTrade.currency = '€';
+
+      // Bei Short Break-Even (>= +1.5R) wird der obere Stop-Loss nach unten auf den Einstiegskurs nachgezogen
+      if (revEval.stage >= 2 && revEval.recommendedStopStock < rTrade.stopLossStock) {
+        rTrade.stopLossStock = revEval.recommendedStopStock;
+        rTrade.breakEvenActive = true;
+      }
+
+      const isRevStopHit = revEval.alertType === 'STOP_LOSS_HIT';
+      const isRevTpHit = revEval.alertType === 'STAGNATION_EXIT';
+      const isRevEod = Boolean(
+        rTrade.isDemoAuto &&
+        !stockRecord?.isSimulation &&
+        (liveClock.isNearClose || !liveClock.isOpen)
+      );
+
+      if (isRevStopHit || isRevTpHit || isRevEod) {
+        const revExitReason = isRevStopHit
+          ? 'Reverse Short Stop-Loss ausgelöst (Kurs über oberem Stop)'
+          : isRevTpHit
+            ? 'Reverse Short Take-Profit (+2R / Abwärtsziel erreicht)'
+            : 'Börsenschluss / EOD Time-Stop (Reverse Account)';
+
+        this.closeReverseActiveTrade(rTrade.id, revEval.currentPrice, revExitReason);
       }
     }
   }
@@ -1429,6 +1673,349 @@ export class StrategyScanner {
     return journalEntry;
   }
 
+  /**
+   * Berechnet das Live-Gesamtkapital (Equity), freies Cash, investiertes Kapital
+   * und den unrealisierten Gewinn/Verlust für Account #2 (Reverse Short-Strategie).
+   */
+  getReverseDemoMetrics() {
+    const demo = this.state.reverseDemoAccount || {
+      autoTradeEnabled: true,
+      initialBalanceEuro: 10000,
+      cashEuro: 10000,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [],
+      orderHistory: []
+    };
+
+    const revTrades = this.state.reverseActiveTrades || [];
+    let investedEuro = 0;
+    let unrealizedPnlEuro = 0;
+
+    for (const trade of revTrades) {
+      if (trade.status !== 'OPEN') continue;
+      const size = Number(trade.positionSizeEuro || 0);
+      investedEuro += size;
+
+      const record = this.stockResults.get(trade.symbol);
+      const currentPrice = Number(
+        record?.exactPriceEur ??
+        trade.latestEvaluation?.currentPrice ??
+        record?.price ??
+        trade.entryPrice
+      );
+
+      // Reverse (Short): Gewinn entsteht wenn currentPrice < entryPrice
+      const stockGainPct = trade.entryPrice > 0
+        ? ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100
+        : 0;
+      const derivGainPct = Math.max(-99, stockGainPct * Number(trade.leverage || 8));
+      const pnl = Math.round(size * (derivGainPct / 100) * 100) / 100;
+      unrealizedPnlEuro += pnl;
+    }
+
+    const cashEuro = Math.round(Number(demo.cashEuro ?? 10000) * 100) / 100;
+    const currentPositionsValueEuro = Math.round((investedEuro + unrealizedPnlEuro) * 100) / 100;
+    const totalEquityEuro = Math.round((cashEuro + currentPositionsValueEuro) * 100) / 100;
+    const initialBalanceEuro = Number(demo.initialBalanceEuro || 10000);
+    const totalReturnEuro = Math.round((totalEquityEuro - initialBalanceEuro) * 100) / 100;
+    const totalReturnPct = initialBalanceEuro > 0
+      ? Math.round(((totalEquityEuro - initialBalanceEuro) / initialBalanceEuro) * 10000) / 100
+      : 0;
+    const totalTrades = Number(demo.totalTrades || 0);
+    const wins = Number(demo.wins || 0);
+    const losses = Number(demo.losses || 0);
+    const winRatePct = totalTrades > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0;
+
+    return {
+      autoTradeEnabled: demo.autoTradeEnabled !== false,
+      strategyMode: 'REVERSE_SHORT',
+      initialBalanceEuro,
+      cashEuro,
+      investedEuro: Math.round(investedEuro * 100) / 100,
+      unrealizedPnlEuro: Math.round(unrealizedPnlEuro * 100) / 100,
+      realizedPnlEuro: Math.round(Number(demo.realizedPnlEuro || 0) * 100) / 100,
+      totalEquityEuro,
+      totalReturnEuro,
+      totalReturnPct,
+      openPositionsCount: revTrades.filter((t) => t.status === 'OPEN').length,
+      totalTrades,
+      closedTradesCount: totalTrades,
+      wins,
+      losses,
+      winRatePct,
+      equityCurve: (demo.equityCurve || []).slice(-60),
+      orderHistory: (demo.orderHistory || []).slice(0, 40)
+    };
+  }
+
+  /**
+   * Setzt Account #2 (Reverse Short) auf das Startkapital (10.000 €) zurück,
+   * oder synchronisiert ihn auf Wunsch neu mit der Historie von Account #1.
+   */
+  resetReverseDemoAccount(initialBalanceInput = 10000, resyncFromMain = false) {
+    if (resyncFromMain) {
+      this.syncReverseFromMainHistory();
+      this.notifier.broadcastWs({
+        type: 'DEMO_ACCOUNT_UPDATED',
+        demoAccount: this.getDemoMetrics(),
+        reverseDemoAccount: this.getReverseDemoMetrics()
+      });
+      return this.getReverseDemoMetrics();
+    }
+
+    const startCap = Math.max(1000, Number(initialBalanceInput || 10000));
+    this.state.reverseActiveTrades = [];
+    this.state.reverseJournal = [];
+    this.state.reverseDemoAccount = {
+      autoTradeEnabled: true,
+      strategyMode: 'REVERSE_SHORT',
+      backfilledFromMain: true,
+      initialBalanceEuro: startCap,
+      cashEuro: startCap,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [
+        {
+          time: new Date().toISOString(),
+          equityEuro: startCap,
+          label: 'Reset / Startkapital (Account #2 Reverse)'
+        }
+      ],
+      orderHistory: []
+    };
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics(),
+      reverseDemoAccount: this.getReverseDemoMetrics()
+    });
+    return this.getReverseDemoMetrics();
+  }
+
+  toggleReverseDemoAutoTrade(enabled) {
+    if (!this.state.reverseDemoAccount) {
+      this.ensureReverseAccountBackfilled();
+    }
+    this.state.reverseDemoAccount.autoTradeEnabled = Boolean(enabled);
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics(),
+      reverseDemoAccount: this.getReverseDemoMetrics()
+    });
+    return this.getReverseDemoMetrics();
+  }
+
+  openReverseActiveTrade(payload) {
+    const symbol = String(payload.symbol || '').toUpperCase();
+    const record = this.stockResults.get(symbol);
+    const entryPrice = Number(payload.entryPrice || record?.exactPriceEur || record?.price || 100);
+    const lodPrice = Number(payload.lodPrice || record?.analysis?.lodPrice || entryPrice * 0.985);
+    const longStopStock = Number(payload.stopLossStock || record?.sizing?.stopLossStock || lodPrice * 0.998);
+    // Beim Reverse-Short liegt der Stop-Loss symmetrisch OBERHALB des Einstiegskurses
+    const riskDist = Math.max(entryPrice * 0.012, Math.abs(entryPrice - longStopStock));
+    const upperStopStock = Math.round((entryPrice + riskDist) * 100) / 100;
+    const leverage = Number(payload.leverage || record?.sizing?.activeLeverage || 8);
+
+    const revDemo = this.state.reverseDemoAccount;
+    const desiredSize = Number(payload.positionSizeEuro || record?.sizing?.positionSizeEuro || 2500);
+    const availableCash = Math.max(0, Number(revDemo.cashEuro ?? 10000));
+    const equityBefore = this.getReverseDemoMetrics().totalEquityEuro || Number(revDemo.initialBalanceEuro || 10000);
+    const maxSingleAutoAlloc = Math.max(250, Math.round(equityBefore * 0.25 * 100) / 100);
+
+    if (availableCash < 250 && payload.isDemoAuto) {
+      return null;
+    }
+
+    const cappedDesired = payload.isDemoAuto ? Math.min(desiredSize, maxSingleAutoAlloc) : desiredSize;
+    const positionSizeEuro = availableCash >= 250
+      ? Math.round(Math.min(cappedDesired, availableCash) * 100) / 100
+      : Math.round(cappedDesired * 100) / 100;
+
+    revDemo.cashEuro = Math.max(0, Math.round((availableCash - positionSizeEuro) * 100) / 100);
+
+    const certEntryPrice = Number(payload.certEntryPrice || record?.sizing?.modelCertEntryPrice || 1.20);
+    const quantityPieces = Number(payload.quantityPieces || Math.max(1, Math.floor(positionSizeEuro / certEntryPrice)));
+
+    const trade = {
+      id: `rev_trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      symbol,
+      name: payload.name || record?.name || symbol,
+      direction: 'SHORT',
+      currency: '€',
+      isDemoAuto: Boolean(payload.isDemoAuto ?? true),
+      entryPrice: Math.round(entryPrice * 10000) / 10000,
+      lodPrice: Math.round(lodPrice * 100) / 100,
+      stopLossStock: upperStopStock,
+      leverage,
+      positionSizeEuro,
+      quantityPieces,
+      certEntryPrice,
+      certStopPrice: Number(payload.certStopPrice || record?.sizing?.modelCertStopPrice || certEntryPrice * 0.9),
+      catalystNote: payload.catalystNote || 'Reverse-Short gegen Phase-4-Lead',
+      peAtEntry: record?.fundamentals?.peValue || null,
+      entryTime: Math.floor(Date.now() / 1000),
+      openedAt: new Date().toISOString(),
+      status: 'OPEN',
+      breakEvenNotified: false,
+      lastExitAlertType: null,
+      latestEvaluation: null
+    };
+
+    const m10Bars = this.m10Store.get(symbol) || [];
+    if (m10Bars.length > 0) {
+      trade.latestEvaluation = evaluateReverseActiveTrade(trade, m10Bars, record?.marketClock || {});
+    }
+
+    revDemo.orderHistory = [
+      {
+        id: `rev_ord_short_${Date.now()}`,
+        action: 'BUY',
+        timestamp: trade.openedAt,
+        time: trade.openedAt,
+        side: 'SHORT (REVERSE ENTRY)',
+        symbol: trade.symbol,
+        name: trade.name,
+        priceEuro: trade.entryPrice,
+        stockPriceEuro: trade.entryPrice,
+        leverage: trade.leverage,
+        positionSizeEuro: trade.positionSizeEuro,
+        amountEuro: trade.positionSizeEuro,
+        quantityPieces: trade.quantityPieces,
+        stopLossEuro: trade.stopLossStock,
+        note: trade.catalystNote
+      },
+      ...(revDemo.orderHistory || [])
+    ].slice(0, 50);
+
+    this.state.reverseActiveTrades.unshift(trade);
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_LIVE_TICK',
+      serverTime: new Date().toISOString(),
+      demoAccount: this.getDemoMetrics(),
+      activeTrades: this.state.activeTrades,
+      journal: this.state.journal.slice(0, 20),
+      reverseDemoAccount: this.getReverseDemoMetrics(),
+      reverseActiveTrades: this.state.reverseActiveTrades,
+      reverseJournal: this.state.reverseJournal.slice(0, 20),
+      livePrices: {}
+    });
+    return trade;
+  }
+
+  closeReverseActiveTrade(tradeId, exitPriceInput = null, exitReason = 'Reverse Take-Profit / Cover') {
+    const idx = this.state.reverseActiveTrades.findIndex((t) => t.id === tradeId);
+    if (idx === -1) throw new Error('Reverse-Trade nicht gefunden');
+
+    const trade = this.state.reverseActiveTrades[idx];
+    const record = this.stockResults.get(trade.symbol);
+    const exitPrice = Number(
+      exitPriceInput || trade.latestEvaluation?.currentPrice || record?.price || trade.entryPrice
+    );
+
+    // Reverse (Short): Gewinn wenn exitPrice < entryPrice
+    const stockGainPct = ((trade.entryPrice - exitPrice) / trade.entryPrice) * 100;
+    const derivGainPct = Math.max(-99, stockGainPct * trade.leverage);
+    const pnlEuro = Math.round(trade.positionSizeEuro * (derivGainPct / 100) * 100) / 100;
+    const payoutEuro = Math.max(0, Math.round((trade.positionSizeEuro + pnlEuro) * 100) / 100);
+    const riskPerShare = Math.max(0.01, Math.abs(trade.stopLossStock - trade.entryPrice));
+    const rMultiple = (trade.entryPrice - exitPrice) / riskPerShare;
+    const stopDistancePct = (riskPerShare / trade.entryPrice) * 100;
+
+    const revDemo = this.state.reverseDemoAccount;
+    revDemo.cashEuro = Math.round((Number(revDemo.cashEuro || 0) + payoutEuro) * 100) / 100;
+    revDemo.realizedPnlEuro = Math.round((Number(revDemo.realizedPnlEuro || 0) + pnlEuro) * 100) / 100;
+    revDemo.totalTrades = Number(revDemo.totalTrades || 0) + 1;
+    if (pnlEuro >= 0) {
+      revDemo.wins = Number(revDemo.wins || 0) + 1;
+    } else {
+      revDemo.losses = Number(revDemo.losses || 0) + 1;
+    }
+
+    this.state.reverseActiveTrades.splice(idx, 1);
+    const updatedMetrics = this.getReverseDemoMetrics();
+
+    const journalEntry = {
+      id: `rev_journal_${Date.now()}`,
+      symbol: trade.symbol,
+      name: trade.name,
+      direction: 'SHORT',
+      currency: '€',
+      openedAt: trade.openedAt,
+      closedAt: new Date().toISOString(),
+      catalystAndPe: `${trade.catalystNote}${trade.peAtEntry ? ` (KGV: ${trade.peAtEntry}x)` : ''}`,
+      entryPrice: trade.entryPrice,
+      lodPrice: trade.lodPrice,
+      stopLossStock: trade.stopLossStock,
+      stopDistancePct: Math.round(stopDistancePct * 100) / 100,
+      exitPrice: Math.round(exitPrice * 100) / 100,
+      leverage: trade.leverage,
+      positionSizeEuro: Math.round(trade.positionSizeEuro),
+      payoutEuro,
+      stockGainPct: Math.round(stockGainPct * 100) / 100,
+      derivGainPct: Math.round(derivGainPct * 10) / 10,
+      pnlEuro,
+      rMultiple: Math.round(rMultiple * 100) / 100,
+      demoEquityAfterEuro: updatedMetrics.totalEquityEuro,
+      exitReason
+    };
+
+    revDemo.orderHistory = [
+      {
+        id: `rev_ord_cover_${Date.now()}`,
+        action: 'SELL',
+        timestamp: journalEntry.closedAt,
+        time: journalEntry.closedAt,
+        side: pnlEuro >= 0 ? 'COVER (SHORT TAKE-PROFIT)' : 'COVER (SHORT STOP-LOSS)',
+        symbol: trade.symbol,
+        name: trade.name,
+        entryPriceEuro: trade.entryPrice,
+        exitPriceEuro: journalEntry.exitPrice,
+        stockPriceEuro: journalEntry.exitPrice,
+        leverage: trade.leverage,
+        payoutEuro,
+        amountEuro: payoutEuro,
+        pnlEuro,
+        derivGainPct: journalEntry.derivGainPct,
+        rMultiple: journalEntry.rMultiple,
+        note: exitReason
+      },
+      ...(revDemo.orderHistory || [])
+    ].slice(0, 50);
+
+    this.state.reverseJournal.unshift(journalEntry);
+
+    revDemo.equityCurve = [
+      ...(revDemo.equityCurve || []),
+      {
+        time: journalEntry.closedAt,
+        equityEuro: updatedMetrics.totalEquityEuro,
+        pnlEuro,
+        label: `SHORT ${trade.symbol} (${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} €)`
+      }
+    ].slice(-60);
+
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_LIVE_TICK',
+      serverTime: new Date().toISOString(),
+      demoAccount: this.getDemoMetrics(),
+      activeTrades: this.state.activeTrades,
+      journal: this.state.journal.slice(0, 20),
+      reverseDemoAccount: updatedMetrics,
+      reverseActiveTrades: this.state.reverseActiveTrades,
+      reverseJournal: this.state.reverseJournal.slice(0, 20),
+      livePrices: {}
+    });
+    return journalEntry;
+  }
+
   getM10ChartData(symbol) {
     return this.m10Store.get(symbol) || [];
   }
@@ -1450,10 +2037,13 @@ export class StrategyScanner {
       nextScanAt: this.nextScanAt,
       settings: this.state.settings,
       demoAccount: this.getDemoMetrics(),
+      reverseDemoAccount: this.getReverseDemoMetrics(),
       indexRegimes: this.indexRegimes,
       stocks,
       activeTrades: this.state.activeTrades,
       journal: this.state.journal,
+      reverseActiveTrades: this.state.reverseActiveTrades,
+      reverseJournal: this.state.reverseJournal,
       alerts: this.notifier.alertHistory,
       news: this.newsItems || [],
       hiddenSymbolsCount: (this.state.hiddenSymbols || []).length

@@ -73,18 +73,53 @@
   <main class="tr-container">
     <!-- LEFT COLUMN: PORTFOLIO HERO + OPEN INVESTMENTS + ACTIVITY -->
     <section class="tr-col-main">
-      <!-- TRADE REPUBLIC PORTFOLIO HERO CARD -->
+      <!-- TRADE REPUBLIC PORTFOLIO HERO CARD WITH A/B ACCOUNT SWITCHER -->
       <div class="tr-card tr-portfolio-card" id="demoAccountStrip">
+        <!-- DUAL ACCOUNT A/B SWITCHER (ACCOUNT #1 LONG VS ACCOUNT #2 REVERSE SHORT) -->
+        <div class="tr-account-switcher" id="accountModeSwitcher">
+          <button type="button" class="tr-acc-card active" data-accmode="main" id="btnSwitchAccMain">
+            <div class="tr-acc-top">
+              <span class="tr-acc-badge long">
+                <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                <span>Account #1 · Original (Long)</span>
+              </span>
+              <span class="tr-acc-meta" id="accMainMeta">0W · 0L</span>
+            </div>
+            <div class="tr-acc-numbers">
+              <strong class="tr-acc-eq" id="accMainEquity">10.000,00 €</strong>
+              <span class="tr-acc-ret" id="accMainReturn">+0,00 € (+0,00 %)</span>
+            </div>
+          </button>
+
+          <button type="button" class="tr-acc-card reverse" data-accmode="reverse" id="btnSwitchAccReverse">
+            <div class="tr-acc-top">
+              <span class="tr-acc-badge short">
+                <svg class="tr-ico tr-ico-xs" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
+                <span>Account #2 · Reverse (Short)</span>
+              </span>
+              <span class="tr-acc-meta" id="accReverseMeta">0W · 0L</span>
+            </div>
+            <div class="tr-acc-numbers">
+              <strong class="tr-acc-eq" id="accReverseEquity">10.000,00 €</strong>
+              <span class="tr-acc-ret" id="accReverseReturn">+0,00 € (+0,00 %)</span>
+            </div>
+          </button>
+        </div>
+
         <div class="tr-portfolio-top">
           <div>
-            <span class="tr-eyebrow">Portfoliowert (Gesamtkapital)</span>
+            <span class="tr-eyebrow" id="demoPortfolioEyebrow">Portfoliowert · Account #1 (Original Long-Strategie)</span>
             <div class="tr-big-number" id="demoTotalEquity">10.000,00 €</div>
             <div class="tr-return-row" id="demoTotalReturn">+0,00 € (+0,00 %) gesamt</div>
           </div>
           <div class="tr-portfolio-actions">
-            <button class="tr-chip-btn tr-btn-icon-text" id="btnResetDemoAccount" title="Demo-Konto auf 10.000 € zurücksetzen">
+            <button class="tr-chip-btn tr-btn-icon-text hidden" id="btnResyncReverseAccount" title="Account #2 komplett aus allen bisherigen &amp; offenen Trades von Account #1 spiegelverkehrt berechnen">
+              <svg class="tr-ico" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+              <span>Spiegeln aus Account #1</span>
+            </button>
+            <button class="tr-chip-btn tr-btn-icon-text" id="btnResetDemoAccount" title="Ausgewähltes Demo-Konto auf 10.000 € zurücksetzen">
               <svg class="tr-ico" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-              <span>Reset 10.000 €</span>
+              <span id="btnResetDemoLabel">Reset 10.000 €</span>
             </button>
           </div>
         </div>

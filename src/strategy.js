@@ -919,6 +919,124 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
 }
 
 /**
+ * Überwacht einen laufenden Reverse-/Short-Trade (Account 2: Inverse Strategie / Turbo-Short):
+ * - Gewinnt, wenn die Aktie nach dem Phase-4-Signal weiter fällt (oder auf das alte LoD/darunter durchbricht).
+ * - Stop-Loss liegt oberhalb des Einstiegskurses (Entry + originaler Risikoabstand).
+ * - Take-Profit / Exit greift bei >= +2.0R Abwärtsimpuls, Abwärts-Stagnation am neuen Tief (>= +1.2R) oder zum Börsenschluss.
+ */
+export function evaluateReverseActiveTrade(trade, m10Bars, marketClock = {}) {
+  if (!trade || !m10Bars || m10Bars.length === 0) return null;
+
+  const latestBar = m10Bars[m10Bars.length - 1];
+  const currentPrice = latestBar.close;
+  const entryPrice = trade.entryPrice;
+  const initialStopStock = trade.stopLossStock; // Beim Short liegt der Stop ÜBER dem Entry!
+  const leverage = trade.leverage || 8;
+  const riskPerShare = Math.max(0.01, Math.abs(initialStopStock - entryPrice));
+
+  // Beim Short-Trade ist ein Kursrückgang (entryPrice - currentPrice > 0) ein Gewinn!
+  const stockGainAbs = entryPrice - currentPrice;
+  const stockGainPct = (stockGainAbs / entryPrice) * 100;
+  const derivGainPct = Math.max(-99, stockGainPct * leverage);
+  const rMultiple = stockGainAbs / riskPerShare;
+  const pnlEuro = (trade.positionSizeEuro || 1000) * (derivGainPct / 100);
+
+  const barsSinceEntry = m10Bars.filter((b) => b.time >= (trade.entryTime || 0));
+  const activeSlice = barsSinceEntry.length >= 2 ? barsSinceEntry : m10Bars.slice(-8);
+  const lowestSinceEntry = Math.min(...activeSlice.map((b) => b.low), entryPrice);
+
+  // 1. Prüfe Short-Stop-Loss (Kurs steigt über den oberen Stop-Loss)
+  if (currentPrice >= initialStopStock) {
+    return {
+      stage: 0,
+      stageName: 'SHORT STOP-LOSS AUSGELÖST (Über oberem Stop)',
+      actionRequired: true,
+      alertType: 'STOP_LOSS_HIT',
+      recommendation: `SHORT STOP-LOSS (${initialStopStock.toFixed(2)} €) ÜBERSCHRITTEN! Short-Position glattstellen.`,
+      recommendedStopStock: initialStopStock,
+      currentPrice: round2(currentPrice),
+      stockGainPct: round2(stockGainPct),
+      derivGainPct: round2(derivGainPct),
+      rMultiple: round2(rMultiple),
+      pnlEuro: round2(pnlEuro),
+      stagnationCriteria: []
+    };
+  }
+
+  // 2. Prüfe Short Take-Profit / Abwärts-Stagnation
+  const stagnationCriteria = [];
+  const prev3Highs = m10Bars.slice(-4, -1).map((b) => b.high);
+  const lastLowerHigh = prev3Highs.length > 0 ? Math.max(...prev3Highs) : initialStopStock;
+
+  // Direktes Kursziel (+2.2R im Short erreicht) oder Stagnation nach starkem Drop (>= 1.2R)
+  if (rMultiple >= 2.2) {
+    stagnationCriteria.push({
+      id: 'short_target_hit',
+      name: 'Short-Kursziel (+2.2R Abwärtsimpuls) erreicht',
+      detail: `Aktie ist nach Signal unter das Tagestief gefallen (+${rMultiple.toFixed(2)}R Gewinn im Short)`
+    });
+  } else if (
+    rMultiple >= 1.2 &&
+    latestBar.close > latestBar.open &&
+    latestBar.close > lowestSinceEntry * 1.003
+  ) {
+    stagnationCriteria.push({
+      id: 'short_bounce_exit',
+      name: 'Short-Gewinnmitnahme nach neuem Tief',
+      detail: `Abwärtsbewegung stagniert nach +${rMultiple.toFixed(2)}R bei ${currentPrice.toFixed(2)} €`
+    });
+  }
+
+  const overnightWarning = marketClock.isNearClose && rMultiple < 1.5;
+
+  let stage = 1;
+  let stageName = 'Stufe 1: Short aktiv (Stop über Einstieg)';
+  let actionRequired = false;
+  let alertType = 'HOLD_STAGE_1';
+  let recommendedStopStock = initialStopStock;
+  let recommendation = `Short läuft. Stop-Loss liegt bei ${initialStopStock.toFixed(2)} €.`;
+
+  if (stagnationCriteria.length > 0) {
+    stage = 3;
+    stageName = 'Stufe 3: SHORT TAKE-PROFIT AUSGELÖST!';
+    actionRequired = true;
+    alertType = 'STAGNATION_EXIT';
+    recommendedStopStock = round2(Math.min(entryPrice, lastLowerHigh));
+    recommendation = `SHORT TAKE-PROFIT: ${stagnationCriteria.map((c) => c.name).join(' + ')}.`;
+  } else if (overnightWarning) {
+    stage = 1;
+    stageName = 'Overnight-Schutz: Vor Börsenschluss glattstellen';
+    actionRequired = true;
+    alertType = 'OVERNIGHT_CLOSE_WARNING';
+    recommendation = 'Vor Handelsschluss Short glattstellen.';
+  } else if (rMultiple >= 1.5) {
+    stage = 2;
+    stageName = 'Stufe 2: Short Break-Even gesichert';
+    actionRequired = !trade.breakEvenNotified;
+    alertType = 'MOVE_TO_BREAKEVEN';
+    recommendedStopStock = round2(Math.min(entryPrice, lastLowerHigh * 1.0015));
+    recommendation = `Short-Gewinn bei +${rMultiple.toFixed(2)}R. Stop-Loss auf Break-Even (${recommendedStopStock.toFixed(2)} €) nachgezogen.`;
+  }
+
+  return {
+    stage,
+    stageName,
+    actionRequired,
+    alertType,
+    recommendation,
+    recommendedStopStock,
+    currentPrice: round2(currentPrice),
+    lowestSinceEntry: round2(lowestSinceEntry),
+    stockGainPct: round2(stockGainPct),
+    derivGainPct: round2(derivGainPct),
+    rMultiple: round2(rMultiple),
+    pnlEuro: round2(pnlEuro),
+    stagnationCriteria,
+    overnightWarning
+  };
+}
+
+/**
  * Generiert die Pre-Trade-Checkliste (9 Pflichtkriterien aus Kapitel 09) für ein analysiertes Setup.
  */
 export function buildPreTradeChecklist(analysis, fundamentals, marketClock, sizing) {

@@ -27,7 +27,8 @@ const state = {
   slPriceLine: null,
   lastDemoTickAt: 0,
   newsFilter: 'all',
-  searchTimer: null
+  searchTimer: null,
+  activeAccountMode: 'reverse'
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -501,7 +502,20 @@ function bindUIEvents() {
     document.getElementById('liveAlertBanner').classList.add('hidden');
   });
 
-  // Demo-Account Steuerung (Auto-Trade Schalter, Orderbuch anzeigen, Reset)
+  // Account Switcher (Account #1 Long vs. Account #2 Reverse Short)
+  document.querySelectorAll('#accountModeSwitcher [data-accmode]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = btn.getAttribute('data-accmode') || 'main';
+      state.activeAccountMode = mode;
+      renderDemoAccount();
+      renderActiveTradesAndJournal();
+      if (state.chartRecord?.sizing) {
+        renderSizingOutput(state.chartRecord.sizing, state.chartRecord.currency || '€');
+      }
+    });
+  });
+
+  // Demo-Account Steuerung (Auto-Trade Schalter, Orderbuch anzeigen, Reset, Resync)
   const chkAuto = document.getElementById('chkDemoAutoTrade');
   if (chkAuto) {
     chkAuto.addEventListener('change', async (e) => {
@@ -509,7 +523,10 @@ function bindUIEvents() {
         const res = await fetch('/api/demo/toggle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ autoTradeEnabled: e.target.checked })
+          body: JSON.stringify({
+            account: state.activeAccountMode,
+            autoTradeEnabled: e.target.checked
+          })
         });
         const data = await res.json();
         if (data.snapshot) applySnapshot(data.snapshot);
@@ -522,9 +539,12 @@ function bindUIEvents() {
   const btnShowOrders = document.getElementById('btnShowDemoOrders');
   if (btnShowOrders) {
     btnShowOrders.addEventListener('click', () => {
-      const openCnt = state.snapshot?.activeTrades?.length || 0;
+      const activeList = state.activeAccountMode === 'reverse'
+        ? state.snapshot?.reverseActiveTrades
+        : state.snapshot?.activeTrades;
+      const openCnt = activeList?.length || 0;
       const tabKey = openCnt > 0 ? 'trades' : 'journal';
-      const tabBtn = document.querySelector(`.wb-tab[data-wbtab="${tabKey}"]`);
+      const tabBtn = document.querySelector(`.wb-tab[data-wbtab="${tabKey}"], .tr-tab[data-wbtab="${tabKey}"]`);
       if (tabBtn) tabBtn.click();
       document.getElementById('wbCardTradesAndAlerts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
@@ -537,7 +557,11 @@ function bindUIEvents() {
         const res = await fetch('/api/demo/reset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initialBalanceEuro: 10000 })
+          body: JSON.stringify({
+            account: state.activeAccountMode,
+            initialBalanceEuro: 10000,
+            resyncFromMain: false
+          })
         });
         const data = await res.json();
         if (data.snapshot) applySnapshot(data.snapshot);
@@ -547,11 +571,32 @@ function bindUIEvents() {
     });
   }
 
+  const btnResyncReverse = document.getElementById('btnResyncReverseAccount');
+  if (btnResyncReverse) {
+    btnResyncReverse.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/demo/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account: 'reverse',
+            initialBalanceEuro: 10000,
+            resyncFromMain: true
+          })
+        });
+        const data = await res.json();
+        if (data.snapshot) applySnapshot(data.snapshot);
+      } catch (err) {
+        console.error('Reverse-Resync Fehler:', err);
+      }
+    });
+  }
+
   // Telegram Quick-Connect Buttons in Topbar & Modal
-  document.getElementById('btnQuickDetectChat').addEventListener('click', quickDetectChatFromHeader);
-  document.getElementById('btnQuickTestAlert').addEventListener('click', triggerTestAlert);
-  document.getElementById('btnTriggerTestAlert').addEventListener('click', triggerTestAlert);
-  document.getElementById('btnModalTestAlert').addEventListener('click', triggerTestAlert);
+  document.getElementById('btnQuickDetectChat')?.addEventListener('click', quickDetectChatFromHeader);
+  document.getElementById('btnQuickTestAlert')?.addEventListener('click', triggerTestAlert);
+  document.getElementById('btnTriggerTestAlert')?.addEventListener('click', triggerTestAlert);
+  document.getElementById('btnModalTestAlert')?.addEventListener('click', triggerTestAlert);
 
   // Settings Modal
   document.getElementById('btnOpenSettings').addEventListener('click', openSettingsModal);
@@ -584,7 +629,8 @@ function connectWebSocket() {
         handleDemoLiveTick(data);
       } else if (data.type === 'DEMO_ACCOUNT_UPDATED') {
         if (state.snapshot) {
-          state.snapshot.demoAccount = data.demoAccount;
+          if (data.demoAccount) state.snapshot.demoAccount = data.demoAccount;
+          if (data.reverseDemoAccount) state.snapshot.reverseDemoAccount = data.reverseDemoAccount;
           renderDemoAccount();
         }
       } else if (data.type === 'SCAN_STATUS') {
@@ -657,6 +703,11 @@ function handleDemoLiveTick(data) {
 
   if (data.demoAccount) {
     state.snapshot.demoAccount = data.demoAccount;
+  }
+  if (data.reverseDemoAccount) {
+    state.snapshot.reverseDemoAccount = data.reverseDemoAccount;
+  }
+  if (data.demoAccount || data.reverseDemoAccount) {
     renderDemoAccount();
   }
 
@@ -665,6 +716,12 @@ function handleDemoLiveTick(data) {
   }
   if (Array.isArray(data.journal) && data.journal.length !== (state.snapshot.journal?.length || 0)) {
     state.snapshot.journal = data.journal;
+  }
+  if (Array.isArray(data.reverseActiveTrades)) {
+    state.snapshot.reverseActiveTrades = data.reverseActiveTrades;
+  }
+  if (Array.isArray(data.reverseJournal) && data.reverseJournal.length !== (state.snapshot.reverseJournal?.length || 0)) {
+    state.snapshot.reverseJournal = data.reverseJournal;
   }
 
   // Aktive Trades & Orderbuch ohne Scroll-Sprung jede Sekunde aktualisieren
@@ -780,21 +837,84 @@ function applySnapshot(snapshot) {
 }
 
 function renderDemoAccount() {
-  const demo = state.snapshot?.demoAccount;
+  const mainDemo = state.snapshot?.demoAccount;
+  const revDemo = state.snapshot?.reverseDemoAccount;
+  if (!mainDemo && !revDemo) return;
+
+  const isReverse = state.activeAccountMode === 'reverse' && Boolean(revDemo);
+  const demo = isReverse ? revDemo : mainDemo;
   if (!demo) return;
 
   const fmtEuro = (val) =>
     `${Number(val || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 
+  // Update Switcher Comparison Cards (Account #1 vs Account #2)
+  document.querySelectorAll('#accountModeSwitcher [data-accmode]').forEach((card) => {
+    const m = card.getAttribute('data-accmode');
+    card.classList.toggle('active', m === (isReverse ? 'reverse' : 'main'));
+  });
+
+  if (mainDemo) {
+    const mEq = document.getElementById('accMainEquity');
+    const mRet = document.getElementById('accMainReturn');
+    const mMeta = document.getElementById('accMainMeta');
+    const rEuro = Number(mainDemo.totalReturnEuro || 0);
+    const rPct = Number(mainDemo.totalReturnPct || 0);
+    const sign = rEuro >= 0 ? '+' : '';
+    if (mEq) mEq.textContent = fmtEuro(mainDemo.totalEquityEuro);
+    if (mRet) {
+      mRet.textContent = `${sign}${fmtEuro(rEuro)} (${sign}${rPct.toFixed(2)} %)`;
+      mRet.style.color = rEuro > 0 ? '#00d09c' : rEuro < 0 ? '#ff4d4f' : '#a1a1aa';
+    }
+    if (mMeta) {
+      mMeta.textContent = `${mainDemo.wins || 0}W · ${mainDemo.losses || 0}L (${Number(mainDemo.winRatePct || 0).toFixed(0)}%)`;
+    }
+  }
+
+  if (revDemo) {
+    const rEq = document.getElementById('accReverseEquity');
+    const rRet = document.getElementById('accReverseReturn');
+    const rMeta = document.getElementById('accReverseMeta');
+    const rEuro = Number(revDemo.totalReturnEuro || 0);
+    const rPct = Number(revDemo.totalReturnPct || 0);
+    const sign = rEuro >= 0 ? '+' : '';
+    if (rEq) rEq.textContent = fmtEuro(revDemo.totalEquityEuro);
+    if (rRet) {
+      rRet.textContent = `${sign}${fmtEuro(rEuro)} (${sign}${rPct.toFixed(2)} %)`;
+      rRet.style.color = rEuro > 0 ? '#00d09c' : rEuro < 0 ? '#ff4d4f' : '#a1a1aa';
+    }
+    if (rMeta) {
+      rMeta.textContent = `${revDemo.wins || 0}W · ${revDemo.losses || 0}L (${Number(revDemo.winRatePct || 0).toFixed(0)}%)`;
+    }
+  }
+
+  const eyebrowEl = document.getElementById('demoPortfolioEyebrow');
+  if (eyebrowEl) {
+    eyebrowEl.textContent = isReverse
+      ? 'Portfoliowert · Account #2 (Reverse Short-Strategie · Invertiert)'
+      : 'Portfoliowert · Account #1 (Original Long-Strategie)';
+  }
+
+  const resyncBtn = document.getElementById('btnResyncReverseAccount');
+  if (resyncBtn) {
+    resyncBtn.classList.toggle('hidden', !isReverse);
+  }
+
+  const resetLabel = document.getElementById('btnResetDemoLabel');
+  if (resetLabel) {
+    resetLabel.textContent = isReverse ? 'Reset Account #2 (10.000 €)' : 'Reset Account #1 (10.000 €)';
+  }
+
   const badge = document.getElementById('demoStatusBadge');
   const chk = document.getElementById('chkDemoAutoTrade');
   if (chk) chk.checked = demo.autoTradeEnabled !== false;
   if (badge) {
+    const modeLabel = isReverse ? 'Reverse-Bot' : 'Auto-Trader';
     if (demo.autoTradeEnabled !== false) {
-      badge.textContent = 'Auto-Trader aktiv';
+      badge.textContent = `${modeLabel} aktiv`;
       badge.classList.remove('paused');
     } else {
-      badge.textContent = 'Auto-Trader pausiert';
+      badge.textContent = `${modeLabel} pausiert`;
       badge.classList.add('paused');
     }
   }
@@ -842,8 +962,8 @@ function renderDemoAccount() {
     realEl.textContent = `${r >= 0 ? '+' : ''}${fmtEuro(r)}`;
   }
 
-  // Berechne aktuelles RR (Avg Win R / Avg Loss R) & Ø R aus dem Journal
-  const journal = state.snapshot?.journal || [];
+  // Berechne aktuelles RR (Avg Win R / Avg Loss R) & Ø R aus dem aktiven Journal
+  const journal = (isReverse ? state.snapshot?.reverseJournal : state.snapshot?.journal) || [];
   const winEntries = journal.filter((j) => Number(j.pnlEuro) >= 0);
   const lossEntries = journal.filter((j) => Number(j.pnlEuro) < 0);
   const avgWinR = winEntries.length
@@ -1264,11 +1384,23 @@ async function recalculateSizingFromInputs() {
 
 function renderSizingOutput(sizing, cur = '€') {
   if (!sizing) return;
-  document.getElementById('heroKpiSl').textContent = `${sizing.stopLossStock.toFixed(2)} ${cur}`;
+  const isReverse = state.activeAccountMode === 'reverse';
+  const entryPrice = Number(sizing.entryPrice || state.chartRecord?.price || 0);
+  const riskDist = Math.max(entryPrice * 0.012, Math.abs(entryPrice - Number(sizing.stopLossStock || 0)));
+  const effectiveSl = isReverse ? entryPrice + riskDist : Number(sizing.stopLossStock || 0);
+
+  document.getElementById('heroKpiSl').textContent = `${effectiveSl.toFixed(2)} ${cur}`;
   const qtSl = document.getElementById('qtStopLoss');
-  if (qtSl) qtSl.textContent = `${sizing.stopLossStock.toFixed(2)} ${cur}`;
-  document.getElementById('heroKpiLev').textContent = `${sizing.activeLeverage}x Long`;
+  if (qtSl) qtSl.textContent = `${effectiveSl.toFixed(2)} ${cur}`;
+  document.getElementById('heroKpiLev').textContent = `${sizing.activeLeverage}x ${isReverse ? 'Short' : 'Long'}`;
   document.getElementById('heroKpiBuy').textContent = `${Math.min(2500, sizing.positionSizeEuro).toFixed(0)} €`;
+
+  const buyBtnSpan = document.querySelector('#btnOpenTradeFromCalc span');
+  if (buyBtnSpan) {
+    buyBtnSpan.textContent = isReverse
+      ? 'Jetzt in Account #2 shorten (Reverse)'
+      : 'Jetzt in Account #1 kaufen (Long)';
+  }
 }
 
 // --- AKTIVE INVESTMENTS & HISTORIE (TRADE REPUBLIC STIL) ---
@@ -1283,6 +1415,7 @@ async function openActiveTradeFromCalculator() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      account: state.activeAccountMode,
       symbol,
       name: state.chartRecord?.name || symbol,
       currency: state.chartRecord?.currency || 'EUR',
@@ -1301,8 +1434,9 @@ async function openActiveTradeFromCalculator() {
 }
 
 function renderActiveTradesAndJournal() {
-  const trades = state.snapshot?.activeTrades || [];
-  const journal = state.snapshot?.journal || [];
+  const isReverse = state.activeAccountMode === 'reverse';
+  const trades = (isReverse ? state.snapshot?.reverseActiveTrades : state.snapshot?.activeTrades) || [];
+  const journal = (isReverse ? state.snapshot?.reverseJournal : state.snapshot?.journal) || [];
   document.getElementById('activeTradesCount').textContent = trades.length;
   const closedBadge = document.getElementById('closedTradesBadge');
   if (closedBadge) closedBadge.textContent = journal.length;
@@ -1310,7 +1444,7 @@ function renderActiveTradesAndJournal() {
   const tradesContainer = document.getElementById('activeTradesList');
   if (trades.length === 0) {
     tradesContainer.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">
-      Keine offenen Positionen. Der Auto-Trader kauft automatisch beim nächsten Phase-4-Lead.
+      Keine offenen Positionen in ${isReverse ? 'Account #2 (Reverse Short)' : 'Account #1 (Original Long)'}. ${isReverse ? 'Der Reverse-Bot eröffnet beim nächsten Phase-4-Lead automatisch eine Gegenposition (Turbo-Short).' : 'Der Auto-Trader kauft automatisch beim nächsten Phase-4-Lead.'}
     </div>`;
   } else {
     tradesContainer.innerHTML = trades
@@ -1322,12 +1456,13 @@ function renderActiveTradesAndJournal() {
         const pnlColor = pnlEuro >= 0 ? '#00d09c' : '#ff4d4f';
         const curPrice = Number(ev.currentPrice || t.entryPrice);
         const slPrice = Number(ev.recommendedStopStock || t.stopLossStock);
+        const dirBadge = t.direction === 'SHORT' || isReverse ? 'SHORT' : 'LONG';
 
         return `<div class="tr-pos-row" data-pos-sym="${escapeHtml(t.symbol)}">
           <div class="tr-pos-left">
             <div class="tr-pos-title">
               <span>${escapeHtml(t.name)}</span>
-              <span class="tr-meta-pill">${escapeHtml(t.symbol)} · ${t.leverage}x</span>
+              <span class="tr-meta-pill">${escapeHtml(t.symbol)} · ${t.leverage}x ${dirBadge}</span>
             </div>
             <div class="tr-pos-sub">
               Einsatz ${Number(t.positionSizeEuro || 0).toFixed(0)} € · Kurs ${curPrice.toFixed(2)} € (Entry ${Number(t.entryPrice).toFixed(2)} € · SL ${slPrice.toFixed(2)} €)
@@ -1338,8 +1473,8 @@ function renderActiveTradesAndJournal() {
               <div class="tr-pos-pnl" style="color:${pnlColor}">${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(2)} €</div>
               <div class="tr-pos-r">${derivPct >= 0 ? '+' : ''}${derivPct.toFixed(1)} % · ${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R</div>
             </div>
-            <button class="tr-chip-btn btn-close-trade" data-id="${escapeHtml(t.id)}" title="Position sofort verkaufen">
-              Verkaufen
+            <button class="tr-chip-btn btn-close-trade" data-id="${escapeHtml(t.id)}" title="Position sofort glattstellen">
+              ${isReverse ? 'Cover' : 'Verkaufen'}
             </button>
           </div>
         </div>`;
@@ -1366,7 +1501,10 @@ function renderActiveTradesAndJournal() {
         const res = await fetch(`/api/trades/${encodeURIComponent(id)}/close`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ exitReason: 'Manueller Verkauf im Demo-Depot' })
+          body: JSON.stringify({
+            account: state.activeAccountMode,
+            exitReason: isReverse ? 'Manuelles Short-Cover (Account #2)' : 'Manueller Verkauf im Demo-Depot'
+          })
         });
         const data = await res.json();
         if (data.snapshot) applySnapshot(data.snapshot);
@@ -1376,19 +1514,20 @@ function renderActiveTradesAndJournal() {
 
   const journalContainer = document.getElementById('journalList');
   if (journal.length === 0) {
-    journalContainer.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">Noch keine abgeschlossenen Trades.</div>`;
+    journalContainer.innerHTML = `<div style="padding:20px;text-align:center;color:#71717a;font-size:13px;">Noch keine abgeschlossenen Trades in ${isReverse ? 'Account #2' : 'Account #1'}.</div>`;
   } else {
     journalContainer.innerHTML = journal
-      .slice(0, 20)
+      .slice(0, 25)
       .map((j) => {
         const win = j.pnlEuro >= 0;
         const pnlColor = win ? '#00d09c' : '#ff4d4f';
         const timeStr = j.closedAt ? new Date(j.closedAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+        const dirBadge = j.direction === 'SHORT' || isReverse ? 'SHORT' : 'LONG';
         return `<div class="tr-pos-row">
           <div class="tr-pos-left">
             <div class="tr-pos-title">
               <span>${escapeHtml(j.name)} (${escapeHtml(j.symbol)})</span>
-              <span class="tr-meta-pill">${j.leverage}x</span>
+              <span class="tr-meta-pill">${j.leverage}x ${dirBadge}</span>
             </div>
             <div class="tr-pos-sub">
               ${Number(j.entryPrice).toFixed(2)} € → ${Number(j.exitPrice).toFixed(2)} € · ${escapeHtml(j.exitReason || 'Exit')} ${timeStr ? `(${timeStr})` : ''}
