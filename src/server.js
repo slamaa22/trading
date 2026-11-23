@@ -203,6 +203,12 @@ app.post('/api/demo/reset', (req, res) => {
       res.json({ ok: true, reverseDemoAccount, snapshot: scanner.getSnapshot() });
       return;
     }
+    if (account === 'daily_long' || account === 'daily_short') {
+      const side = account === 'daily_short' ? 'short' : 'long';
+      const dailyAccount = scanner.resetDailyAccount(side, initialBalanceEuro);
+      res.json({ ok: true, dailyAccount, snapshot: scanner.getSnapshot() });
+      return;
+    }
     const demoAccount = scanner.resetDemoAccount(initialBalanceEuro);
     res.json({ ok: true, demoAccount, snapshot: scanner.getSnapshot() });
   } catch (err) {
@@ -216,6 +222,12 @@ app.post('/api/demo/toggle', (req, res) => {
     if (account === 'reverse') {
       const reverseDemoAccount = scanner.toggleReverseDemoAutoTrade(Boolean(req.body?.autoTradeEnabled));
       res.json({ ok: true, reverseDemoAccount, snapshot: scanner.getSnapshot() });
+      return;
+    }
+    if (account === 'daily_long' || account === 'daily_short') {
+      const side = account === 'daily_short' ? 'short' : 'long';
+      const dailyAccount = scanner.toggleDailyAutoTrade(side, Boolean(req.body?.autoTradeEnabled));
+      res.json({ ok: true, dailyAccount, snapshot: scanner.getSnapshot() });
       return;
     }
     const demoAccount = scanner.toggleDemoAutoTrade(Boolean(req.body?.autoTradeEnabled));
@@ -307,9 +319,16 @@ app.get('/api/news', async (req, res) => {
 app.post('/api/trades', (req, res) => {
   try {
     const account = String(req.body?.account || 'main').toLowerCase();
-    const trade = account === 'reverse'
-      ? scanner.openReverseActiveTrade(req.body || {})
-      : scanner.openActiveTrade(req.body || {});
+    let trade;
+    if (account === 'reverse') {
+      trade = scanner.openReverseActiveTrade(req.body || {});
+    } else if (account === 'daily_long') {
+      trade = scanner.openDailyTrade('long', req.body || {});
+    } else if (account === 'daily_short') {
+      trade = scanner.openDailyTrade('short', req.body || {});
+    } else {
+      trade = scanner.openActiveTrade(req.body || {});
+    }
     res.json({ ok: true, trade, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -324,19 +343,43 @@ app.get('/api/demo/live', (req, res) => {
     journal: scanner.state.journal.slice(0, 20),
     reverseDemoAccount: scanner.getReverseDemoMetrics(),
     reverseActiveTrades: scanner.state.reverseActiveTrades,
-    reverseJournal: scanner.state.reverseJournal.slice(0, 20)
+    reverseJournal: scanner.state.reverseJournal.slice(0, 20),
+    dailySession: scanner.getDailySessionPayload(),
+    dailyAccountsHistory: scanner.state.dailyAccountsHistory || []
+  });
+});
+
+app.get('/api/demo/daily-history', (req, res) => {
+  res.json({
+    ok: true,
+    dailySession: scanner.getDailySessionPayload(),
+    dailyAccountsHistory: scanner.state.dailyAccountsHistory || []
   });
 });
 
 app.post('/api/trades/:id/close', (req, res) => {
   try {
     const tradeId = String(req.params.id || '');
-    const isReverse = req.body?.account === 'reverse' ||
+    const account = String(req.body?.account || '').toLowerCase();
+    const ds = scanner.state.dailySession;
+    const isDailyLong = account === 'daily_long' || tradeId.startsWith('daily_long_') ||
+      (ds?.longActiveTrades || []).some((t) => t.id === tradeId);
+    const isDailyShort = account === 'daily_short' || tradeId.startsWith('daily_short_') ||
+      (ds?.shortActiveTrades || []).some((t) => t.id === tradeId);
+    const isReverse = account === 'reverse' ||
       tradeId.startsWith('rev_') ||
       scanner.state.reverseActiveTrades.some((t) => t.id === tradeId);
-    const journalEntry = isReverse
-      ? scanner.closeReverseActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason)
-      : scanner.closeActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason);
+
+    let journalEntry;
+    if (isDailyLong) {
+      journalEntry = scanner.closeDailyTrade('long', tradeId, req.body?.exitPrice, req.body?.exitReason);
+    } else if (isDailyShort) {
+      journalEntry = scanner.closeDailyTrade('short', tradeId, req.body?.exitPrice, req.body?.exitReason);
+    } else if (isReverse) {
+      journalEntry = scanner.closeReverseActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason);
+    } else {
+      journalEntry = scanner.closeActiveTrade(tradeId, req.body?.exitPrice, req.body?.exitReason);
+    }
     res.json({ ok: true, journalEntry, snapshot: scanner.getSnapshot() });
   } catch (err) {
     res.status(400).json({ error: err.message });

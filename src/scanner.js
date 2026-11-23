@@ -59,6 +59,52 @@ const DEFAULT_DEMO_ACCOUNT = {
   orderHistory: []
 };
 
+function getBerlinDateStr(dateInput = new Date()) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Berlin',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date(dateInput));
+  } catch {
+    return new Date(dateInput).toISOString().slice(0, 10);
+  }
+}
+
+function createEmptyDailySession(dateStr = getBerlinDateStr()) {
+  const nowIso = new Date().toISOString();
+  return {
+    date: dateStr,
+    longAccount: {
+      autoTradeEnabled: true,
+      initialBalanceEuro: 10000,
+      cashEuro: 10000,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [{ time: nowIso, equityEuro: 10000, label: `Tagesstart ${dateStr} (Long)` }],
+      orderHistory: []
+    },
+    shortAccount: {
+      autoTradeEnabled: true,
+      initialBalanceEuro: 10000,
+      cashEuro: 10000,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [{ time: nowIso, equityEuro: 10000, label: `Tagesstart ${dateStr} (Short)` }],
+      orderHistory: []
+    },
+    longActiveTrades: [],
+    shortActiveTrades: [],
+    longJournal: [],
+    shortJournal: []
+  };
+}
+
 export class StrategyScanner {
   constructor(marketData, notifier) {
     this.marketData = marketData;
@@ -87,6 +133,7 @@ export class StrategyScanner {
     this.newsTimer = null;
 
     this.ensureReverseAccountBackfilled();
+    this.ensureDailyAccountsInitialized();
   }
 
   /**
@@ -109,6 +156,229 @@ export class StrategyScanner {
     ) {
       this.syncReverseFromMainHistory();
     }
+  }
+
+  ensureDailyAccountsInitialized() {
+    const hasSession = Boolean(this.state.dailySession && this.state.dailySession.date);
+    if (!hasSession) {
+      this.backfillDailyAccountsFromJournals();
+    } else {
+      this.rolloverDailyAccountsIfNeeded();
+    }
+  }
+
+  replayDailySideTrades(tradesList = [], dateStr, side = 'long') {
+    const startCap = 10000;
+    let realizedPnl = 0;
+    let wins = 0;
+    let losses = 0;
+    const chrono = [...tradesList].sort(
+      (a, b) => new Date(a.closedAt || a.openedAt || 0) - new Date(b.closedAt || b.openedAt || 0)
+    );
+    const replayed = [];
+    const equityCurve = [{ time: `${dateStr}T08:00:00.000Z`, equityEuro: startCap, label: `Tagesstart ${dateStr}` }];
+    const orderHistory = [];
+
+    for (const t of chrono) {
+      const currentEq = Math.max(250, startCap + realizedPnl);
+      const maxPos = Math.round(currentEq * 0.25 * 100) / 100;
+      const origSize = Number(t.positionSizeEuro || 2000);
+      const dailySize = Math.round(Math.min(origSize, maxPos) * 100) / 100;
+      const derivGainPct = Number(t.derivGainPct || 0);
+      const pnlEuro = Math.round(dailySize * (derivGainPct / 100) * 100) / 100;
+      const payoutEuro = Math.max(0, Math.round((dailySize + pnlEuro) * 100) / 100);
+
+      realizedPnl = Math.round((realizedPnl + pnlEuro) * 100) / 100;
+      if (pnlEuro >= 0) wins++;
+      else losses++;
+
+      const eqAfter = Math.round((startCap + realizedPnl) * 100) / 100;
+      const entry = {
+        ...t,
+        id: `daily_${side}_${dateStr}_${t.id || Math.random().toString(36).slice(2, 6)}`,
+        direction: side === 'short' ? 'SHORT' : 'LONG',
+        dailyDate: dateStr,
+        positionSizeEuro: Math.round(dailySize),
+        payoutEuro,
+        pnlEuro,
+        demoEquityAfterEuro: eqAfter
+      };
+      replayed.unshift(entry);
+      equityCurve.push({
+        time: t.closedAt || new Date().toISOString(),
+        equityEuro: eqAfter,
+        pnlEuro,
+        label: `${side === 'short' ? 'SHORT' : 'LONG'} ${t.symbol} (${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} €)`
+      });
+      orderHistory.unshift({
+        id: `daily_ord_${side}_${dateStr}_${t.symbol}`,
+        action: 'SELL',
+        timestamp: t.closedAt || new Date().toISOString(),
+        time: t.closedAt || new Date().toISOString(),
+        side: side === 'short' ? 'COVER (SHORT)' : 'SELL (LONG)',
+        symbol: t.symbol,
+        name: t.name,
+        entryPriceEuro: t.entryPrice,
+        exitPriceEuro: t.exitPrice,
+        leverage: t.leverage,
+        payoutEuro,
+        amountEuro: payoutEuro,
+        pnlEuro,
+        derivGainPct,
+        rMultiple: t.rMultiple,
+        note: t.exitReason
+      });
+    }
+
+    const totalTrades = chrono.length;
+    const winRatePct = totalTrades > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0;
+    const endEquityEuro = Math.round((startCap + realizedPnl) * 100) / 100;
+    const dailyReturnPct = Math.round(((endEquityEuro - startCap) / startCap) * 10000) / 100;
+
+    return {
+      account: {
+        autoTradeEnabled: true,
+        initialBalanceEuro: startCap,
+        cashEuro: Math.max(0, endEquityEuro),
+        realizedPnlEuro: realizedPnl,
+        totalTrades,
+        wins,
+        losses,
+        equityCurve: equityCurve.slice(-60),
+        orderHistory: orderHistory.slice(0, 50)
+      },
+      summary: {
+        initialBalanceEuro: startCap,
+        endEquityEuro,
+        dailyPnlEuro: realizedPnl,
+        dailyReturnPct,
+        totalTrades,
+        wins,
+        losses,
+        winRatePct
+      },
+      journal: replayed
+    };
+  }
+
+  backfillDailyAccountsFromJournals() {
+    const todayStr = getBerlinDateStr();
+    const byDay = new Map();
+
+    for (const j of this.state.journal || []) {
+      const d = getBerlinDateStr(j.closedAt || j.openedAt || Date.now());
+      if (!byDay.has(d)) byDay.set(d, { long: [], short: [] });
+      byDay.get(d).long.push(j);
+    }
+    for (const rj of this.state.reverseJournal || []) {
+      const d = getBerlinDateStr(rj.closedAt || rj.openedAt || Date.now());
+      if (!byDay.has(d)) byDay.set(d, { long: [], short: [] });
+      byDay.get(d).short.push(rj);
+    }
+
+    const history = [];
+    let todaySession = createEmptyDailySession(todayStr);
+
+    const sortedDates = Array.from(byDay.keys()).sort();
+    for (const d of sortedDates) {
+      const bucket = byDay.get(d);
+      const longRep = this.replayDailySideTrades(bucket.long, d, 'long');
+      const shortRep = this.replayDailySideTrades(bucket.short, d, 'short');
+
+      if (d === todayStr) {
+        todaySession = {
+          date: todayStr,
+          longAccount: longRep.account,
+          shortAccount: shortRep.account,
+          longActiveTrades: [],
+          shortActiveTrades: [],
+          longJournal: longRep.journal,
+          shortJournal: shortRep.journal
+        };
+      } else if (d < todayStr) {
+        history.unshift({
+          date: d,
+          longSummary: longRep.summary,
+          shortSummary: shortRep.summary,
+          longTrades: longRep.journal,
+          shortTrades: shortRep.journal
+        });
+      }
+    }
+
+    this.state.dailySession = todaySession;
+    this.state.dailyAccountsHistory = history.slice(0, 180);
+    this.saveState();
+  }
+
+  rolloverDailyAccountsIfNeeded() {
+    const todayStr = getBerlinDateStr();
+    if (!this.state.dailySession) {
+      this.state.dailySession = createEmptyDailySession(todayStr);
+      this.saveState();
+      return false;
+    }
+
+    if (this.state.dailySession.date === todayStr) {
+      return false;
+    }
+
+    const prev = this.state.dailySession;
+    const prevDate = prev.date;
+
+    // Falls im vorherigen Tages-Account noch Positionen offen waren, sauber zum letzten Kurs glattstellen
+    for (const t of [...(prev.longActiveTrades || [])]) {
+      try {
+        this.closeDailyTrade('long', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
+      } catch {
+        // ignore
+      }
+    }
+    for (const t of [...(prev.shortActiveTrades || [])]) {
+      try {
+        this.closeDailyTrade('short', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
+      } catch {
+        // ignore
+      }
+    }
+
+    const longMetrics = this.getDailyMetrics('long');
+    const shortMetrics = this.getDailyMetrics('short');
+
+    const dayRecord = {
+      date: prevDate,
+      longSummary: {
+        initialBalanceEuro: longMetrics.initialBalanceEuro,
+        endEquityEuro: longMetrics.totalEquityEuro,
+        dailyPnlEuro: longMetrics.totalReturnEuro,
+        dailyReturnPct: longMetrics.totalReturnPct,
+        totalTrades: longMetrics.totalTrades,
+        wins: longMetrics.wins,
+        losses: longMetrics.losses,
+        winRatePct: longMetrics.winRatePct
+      },
+      shortSummary: {
+        initialBalanceEuro: shortMetrics.initialBalanceEuro,
+        endEquityEuro: shortMetrics.totalEquityEuro,
+        dailyPnlEuro: shortMetrics.totalReturnEuro,
+        dailyReturnPct: shortMetrics.totalReturnPct,
+        totalTrades: shortMetrics.totalTrades,
+        wins: shortMetrics.wins,
+        losses: shortMetrics.losses,
+        winRatePct: shortMetrics.winRatePct
+      },
+      longTrades: prev.longJournal || [],
+      shortTrades: prev.shortJournal || []
+    };
+
+    const existing = (this.state.dailyAccountsHistory || []).filter((h) => h.date !== prevDate);
+    this.state.dailyAccountsHistory = [dayRecord, ...existing]
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+      .slice(0, 180);
+
+    this.state.dailySession = createEmptyDailySession(todayStr);
+    this.saveState();
+    return true;
   }
 
   syncReverseFromMainHistory() {
@@ -282,7 +552,9 @@ export class StrategyScanner {
           activeTrades: Array.isArray(raw.activeTrades) ? raw.activeTrades : [],
           journal: Array.isArray(raw.journal) ? raw.journal : [],
           reverseActiveTrades: Array.isArray(raw.reverseActiveTrades) ? raw.reverseActiveTrades : [],
-          reverseJournal: Array.isArray(raw.reverseJournal) ? raw.reverseJournal : []
+          reverseJournal: Array.isArray(raw.reverseJournal) ? raw.reverseJournal : [],
+          dailySession: raw.dailySession && raw.dailySession.date ? raw.dailySession : null,
+          dailyAccountsHistory: Array.isArray(raw.dailyAccountsHistory) ? raw.dailyAccountsHistory : []
         };
       }
     } catch {
@@ -305,7 +577,9 @@ export class StrategyScanner {
       activeTrades: [],
       journal: [],
       reverseActiveTrades: [],
-      reverseJournal: []
+      reverseJournal: [],
+      dailySession: null,
+      dailyAccountsHistory: []
     };
   }
 
@@ -558,14 +832,15 @@ export class StrategyScanner {
     this.isDemoTickRunning = true;
 
     try {
+      this.rolloverDailyAccountsIfNeeded();
+
       const openTrades = this.state.activeTrades.filter((t) => t.status === 'OPEN');
       const openReverseTrades = (this.state.reverseActiveTrades || []).filter((t) => t.status === 'OPEN');
+      const openDailyLong = (this.state.dailySession?.longActiveTrades || []).filter((t) => t.status === 'OPEN');
+      const openDailyShort = (this.state.dailySession?.shortActiveTrades || []).filter((t) => t.status === 'OPEN');
       const liveSymbolSet = new Set();
 
-      for (const t of openTrades) {
-        if (t.symbol) liveSymbolSet.add(t.symbol);
-      }
-      for (const t of openReverseTrades) {
+      for (const t of [...openTrades, ...openReverseTrades, ...openDailyLong, ...openDailyShort]) {
         if (t.symbol) liveSymbolSet.add(t.symbol);
       }
       for (const sym of this.watchedSymbols.values()) {
@@ -574,9 +849,10 @@ export class StrategyScanner {
 
       const livePrices = {};
       const targetSymbols = Array.from(liveSymbolSet).slice(0, 15);
+      const hasAnyOpen = openTrades.length > 0 || openReverseTrades.length > 0 || openDailyLong.length > 0 || openDailyShort.length > 0;
       const shouldFetch =
         targetSymbols.length > 0 &&
-        (openTrades.length > 0 || openReverseTrades.length > 0 || this.notifier.wsClients.size > 0);
+        (hasAnyOpen || this.notifier.wsClients.size > 0);
 
       if (shouldFetch) {
         try {
@@ -625,7 +901,7 @@ export class StrategyScanner {
         }
       }
 
-      if (openTrades.length > 0 || openReverseTrades.length > 0) {
+      if (hasAnyOpen) {
         await this.evaluateAllActiveTrades();
       }
 
@@ -639,6 +915,8 @@ export class StrategyScanner {
           journal: this.state.journal.slice(0, 20),
           reverseActiveTrades: this.state.reverseActiveTrades || [],
           reverseJournal: (this.state.reverseJournal || []).slice(0, 20),
+          dailySession: this.getDailySessionPayload(),
+          dailyAccountsHistory: this.state.dailyAccountsHistory || [],
           livePrices
         });
       }
@@ -989,13 +1267,68 @@ export class StrategyScanner {
             isDemoAuto: true,
             entryPrice: fullRecord.exactPriceEur || fullRecord.price,
             lodPrice: analysis.lodPrice,
-            origStopLossStock: sizing.stopLossStock,
+            stopLossStock: sizing.stopLossStock,
             leverage: sizing.activeLeverage,
             positionSizeEuro: sizing.positionSizeEuro,
             quantityPieces: sizing.quantityPieces,
             certEntryPrice: sizing.modelCertEntryPrice,
             certStopPrice: sizing.modelCertStopPrice,
             catalystNote: 'Auto-Reverse Account #2 (Turbo-Short gegen Phase-4-Lead)'
+          });
+        }
+
+        // TAGES-ACCOUNTS (10.000 € PRO HANDELSTAG): Tages-Long & Tages-Short parallel eröffnen!
+        this.rolloverDailyAccountsIfNeeded();
+        const ds = this.state.dailySession;
+        const alreadyOpenDailyLong = (ds?.longActiveTrades || []).some(
+          (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
+        );
+        if (
+          ds &&
+          !alreadyOpenDailyLong &&
+          ds.longAccount?.autoTradeEnabled !== false &&
+          Number(ds.longAccount?.cashEuro || 0) >= 250
+        ) {
+          this.openDailyTrade('long', {
+            symbol: stockMeta.symbol,
+            name: stockMeta.name,
+            currency: '€',
+            isDemoAuto: true,
+            entryPrice: fullRecord.exactPriceEur || fullRecord.price,
+            lodPrice: analysis.lodPrice,
+            stopLossStock: sizing.stopLossStock,
+            leverage: sizing.activeLeverage,
+            positionSizeEuro: sizing.positionSizeEuro,
+            quantityPieces: sizing.quantityPieces,
+            certEntryPrice: sizing.modelCertEntryPrice,
+            certStopPrice: sizing.modelCertStopPrice,
+            catalystNote: `Tages-Long (${ds.date}) · Phase-4-Lead`
+          });
+        }
+
+        const alreadyOpenDailyShort = (ds?.shortActiveTrades || []).some(
+          (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
+        );
+        if (
+          ds &&
+          !alreadyOpenDailyShort &&
+          ds.shortAccount?.autoTradeEnabled !== false &&
+          Number(ds.shortAccount?.cashEuro || 0) >= 250
+        ) {
+          this.openDailyTrade('short', {
+            symbol: stockMeta.symbol,
+            name: stockMeta.name,
+            currency: '€',
+            isDemoAuto: true,
+            entryPrice: fullRecord.exactPriceEur || fullRecord.price,
+            lodPrice: analysis.lodPrice,
+            stopLossStock: sizing.stopLossStock,
+            leverage: sizing.activeLeverage,
+            positionSizeEuro: sizing.positionSizeEuro,
+            quantityPieces: sizing.quantityPieces,
+            certEntryPrice: sizing.modelCertEntryPrice,
+            certStopPrice: sizing.modelCertStopPrice,
+            catalystNote: `Tages-Short (${ds.date}) · Reverse Phase-4-Lead`
           });
         }
 
@@ -1011,7 +1344,7 @@ export class StrategyScanner {
             ? `NEUER LEAD & DEMO-KAUF: ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`
             : `NEUER LEAD (ENTRY): ${stockMeta.name} (${fullRecord.price.toFixed(2)} €)`,
           message: openedDemoTrade
-            ? `${analysis.actionText} — Demo-Account #1 (Long) & Account #2 (Reverse Short) haben automatisch getradet!`
+            ? `${analysis.actionText} — Demo-Account #1 (Long), Account #2 (Reverse Short) & Tages-Accounts haben automatisch getradet!`
             : `${analysis.actionText} — Empfohlene Position: ${sizing.positionSizeEuro.toFixed(0)} € (${sizing.activeLeverage}x Long).`,
           price: fullRecord.price,
           lodPrice: analysis.lodPrice,
@@ -1038,9 +1371,11 @@ export class StrategyScanner {
   }
 
   /**
-   * Überwacht alle offenen Leads/Trades des Demo-Accounts (Account 1 Long + Account 2 Reverse Short):
+   * Überwacht alle offenen Leads/Trades des Demo-Accounts (Account 1 Long + Account 2 Reverse Short + Tages-Accounts):
    */
   async evaluateAllActiveTrades() {
+    this.rolloverDailyAccountsIfNeeded();
+
     // Kopie des Arrays, da closeActiveTrade Elemente aus this.state.activeTrades entfernt
     const openTrades = [...this.state.activeTrades].filter((t) => t.status === 'OPEN');
 
@@ -1171,6 +1506,76 @@ export class StrategyScanner {
             : 'Börsenschluss / EOD Time-Stop (Reverse Account)';
 
         this.closeReverseActiveTrade(rTrade.id, revEval.currentPrice, revExitReason);
+      }
+    }
+
+    // --- TAGES-ACCOUNTS (HEUTIGER HANDELSTAG): TAGES-LONG & TAGES-SHORT ---
+    const ds = this.state.dailySession;
+    if (ds) {
+      const openDailyLong = [...(ds.longActiveTrades || [])].filter((t) => t.status === 'OPEN');
+      for (const dlTrade of openDailyLong) {
+        const m10Bars = this.m10Store.get(dlTrade.symbol);
+        if (!m10Bars || m10Bars.length === 0) continue;
+        const stockRecord = this.stockResults.get(dlTrade.symbol);
+        const stockMeta = DEFAULT_UNIVERSE.find((u) => u.symbol === dlTrade.symbol);
+        const idxInfo = BENCHMARK_INDICES[stockRecord?.index || stockMeta?.index] || BENCHMARK_INDICES.DAX;
+        const liveClock = checkReferenceMarketOpen(stockRecord?.region || idxInfo.region);
+
+        const dlEval = evaluateActiveTrade(dlTrade, m10Bars, liveClock);
+        if (!dlEval) continue;
+        dlTrade.latestEvaluation = dlEval;
+        dlTrade.currency = '€';
+
+        if (dlEval.stage >= 2 && dlEval.recommendedStopStock > dlTrade.stopLossStock) {
+          dlTrade.stopLossStock = dlEval.recommendedStopStock;
+          dlTrade.breakEvenActive = true;
+        }
+
+        const isStopHit = dlEval.alertType === 'STOP_LOSS_HIT';
+        const isStagExit = dlEval.alertType === 'STAGNATION_EXIT';
+        const isEod = Boolean(dlTrade.isDemoAuto && !stockRecord?.isSimulation && (liveClock.isNearClose || !liveClock.isOpen));
+
+        if (isStopHit || isStagExit || isEod) {
+          const reason = isStopHit
+            ? 'Stop-Loss unter Tagestief (Tages-Long)'
+            : isStagExit
+              ? 'Stagnations-Exit / Take-Profit (Tages-Long)'
+              : 'Börsenschluss / EOD Time-Stop (Tages-Long)';
+          this.closeDailyTrade('long', dlTrade.id, dlEval.currentPrice, reason);
+        }
+      }
+
+      const openDailyShort = [...(ds.shortActiveTrades || [])].filter((t) => t.status === 'OPEN');
+      for (const dsTrade of openDailyShort) {
+        const m10Bars = this.m10Store.get(dsTrade.symbol);
+        if (!m10Bars || m10Bars.length === 0) continue;
+        const stockRecord = this.stockResults.get(dsTrade.symbol);
+        const stockMeta = DEFAULT_UNIVERSE.find((u) => u.symbol === dsTrade.symbol);
+        const idxInfo = BENCHMARK_INDICES[stockRecord?.index || stockMeta?.index] || BENCHMARK_INDICES.DAX;
+        const liveClock = checkReferenceMarketOpen(stockRecord?.region || idxInfo.region);
+
+        const dsEval = evaluateReverseActiveTrade(dsTrade, m10Bars, liveClock);
+        if (!dsEval) continue;
+        dsTrade.latestEvaluation = dsEval;
+        dsTrade.currency = '€';
+
+        if (dsEval.stage >= 2 && dsEval.recommendedStopStock < dsTrade.stopLossStock) {
+          dsTrade.stopLossStock = dsEval.recommendedStopStock;
+          dsTrade.breakEvenActive = true;
+        }
+
+        const isStopHit = dsEval.alertType === 'STOP_LOSS_HIT';
+        const isTpHit = dsEval.alertType === 'STAGNATION_EXIT';
+        const isEod = Boolean(dsTrade.isDemoAuto && !stockRecord?.isSimulation && (liveClock.isNearClose || !liveClock.isOpen));
+
+        if (isStopHit || isTpHit || isEod) {
+          const reason = isStopHit
+            ? 'Reverse Short Stop-Loss (Tages-Short)'
+            : isTpHit
+              ? 'Reverse Short Take-Profit (Tages-Short)'
+              : 'Börsenschluss / EOD Time-Stop (Tages-Short)';
+          this.closeDailyTrade('short', dsTrade.id, dsEval.currentPrice, reason);
+        }
       }
     }
   }
@@ -2016,11 +2421,353 @@ export class StrategyScanner {
     return journalEntry;
   }
 
+  // --- TAGES-ACCOUNTS (10.000 € PRO HANDELSTAG: TAGES-LONG & TAGES-SHORT) ---
+
+  getDailyMetrics(side = 'long') {
+    this.rolloverDailyAccountsIfNeeded();
+    const ds = this.state.dailySession || createEmptyDailySession();
+    const isShort = side === 'short';
+    const acc = isShort ? ds.shortAccount : ds.longAccount;
+    const trades = isShort ? (ds.shortActiveTrades || []) : (ds.longActiveTrades || []);
+
+    let investedEuro = 0;
+    let unrealizedPnlEuro = 0;
+
+    for (const trade of trades) {
+      if (trade.status !== 'OPEN') continue;
+      const size = Number(trade.positionSizeEuro || 0);
+      investedEuro += size;
+
+      const record = this.stockResults.get(trade.symbol);
+      const currentPrice = Number(
+        record?.exactPriceEur ??
+        trade.latestEvaluation?.currentPrice ??
+        record?.price ??
+        trade.entryPrice
+      );
+
+      const stockGainPct = trade.entryPrice > 0
+        ? (isShort
+          ? ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100
+          : ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100)
+        : 0;
+      const derivGainPct = Math.max(-99, stockGainPct * Number(trade.leverage || 8));
+      const pnl = Math.round(size * (derivGainPct / 100) * 100) / 100;
+      unrealizedPnlEuro += pnl;
+    }
+
+    const cashEuro = Math.round(Number(acc?.cashEuro ?? 10000) * 100) / 100;
+    const currentPositionsValueEuro = Math.round((investedEuro + unrealizedPnlEuro) * 100) / 100;
+    const totalEquityEuro = Math.round((cashEuro + currentPositionsValueEuro) * 100) / 100;
+    const initialBalanceEuro = Number(acc?.initialBalanceEuro || 10000);
+    const totalReturnEuro = Math.round((totalEquityEuro - initialBalanceEuro) * 100) / 100;
+    const totalReturnPct = initialBalanceEuro > 0
+      ? Math.round(((totalEquityEuro - initialBalanceEuro) / initialBalanceEuro) * 10000) / 100
+      : 0;
+    const totalTrades = Number(acc?.totalTrades || 0);
+    const wins = Number(acc?.wins || 0);
+    const losses = Number(acc?.losses || 0);
+    const winRatePct = totalTrades > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0;
+
+    return {
+      date: ds.date,
+      side: isShort ? 'SHORT' : 'LONG',
+      autoTradeEnabled: acc?.autoTradeEnabled !== false,
+      initialBalanceEuro,
+      cashEuro,
+      investedEuro: Math.round(investedEuro * 100) / 100,
+      unrealizedPnlEuro: Math.round(unrealizedPnlEuro * 100) / 100,
+      realizedPnlEuro: Math.round(Number(acc?.realizedPnlEuro || 0) * 100) / 100,
+      totalEquityEuro,
+      totalReturnEuro,
+      totalReturnPct,
+      openPositionsCount: trades.filter((t) => t.status === 'OPEN').length,
+      totalTrades,
+      closedTradesCount: totalTrades,
+      wins,
+      losses,
+      winRatePct,
+      equityCurve: (acc?.equityCurve || []).slice(-60),
+      orderHistory: (acc?.orderHistory || []).slice(0, 40)
+    };
+  }
+
+  getDailySessionPayload() {
+    this.rolloverDailyAccountsIfNeeded();
+    const ds = this.state.dailySession || createEmptyDailySession();
+    return {
+      date: ds.date,
+      longAccount: this.getDailyMetrics('long'),
+      shortAccount: this.getDailyMetrics('short'),
+      longActiveTrades: ds.longActiveTrades || [],
+      shortActiveTrades: ds.shortActiveTrades || [],
+      longJournal: ds.longJournal || [],
+      shortJournal: ds.shortJournal || []
+    };
+  }
+
+  resetDailyAccount(side = 'long', initialBalanceInput = 10000) {
+    this.rolloverDailyAccountsIfNeeded();
+    const ds = this.state.dailySession;
+    const startCap = Math.max(1000, Number(initialBalanceInput || 10000));
+    const freshAcc = {
+      autoTradeEnabled: true,
+      initialBalanceEuro: startCap,
+      cashEuro: startCap,
+      realizedPnlEuro: 0,
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      equityCurve: [{ time: new Date().toISOString(), equityEuro: startCap, label: `Reset ${ds.date}` }],
+      orderHistory: []
+    };
+    if (side === 'short') {
+      ds.shortAccount = freshAcc;
+      ds.shortActiveTrades = [];
+      ds.shortJournal = [];
+    } else {
+      ds.longAccount = freshAcc;
+      ds.longActiveTrades = [];
+      ds.longJournal = [];
+    }
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics(),
+      reverseDemoAccount: this.getReverseDemoMetrics(),
+      dailySession: this.getDailySessionPayload(),
+      dailyAccountsHistory: this.state.dailyAccountsHistory || []
+    });
+    return this.getDailyMetrics(side);
+  }
+
+  toggleDailyAutoTrade(side = 'long', enabled = true) {
+    this.rolloverDailyAccountsIfNeeded();
+    const ds = this.state.dailySession;
+    if (side === 'short') {
+      ds.shortAccount.autoTradeEnabled = Boolean(enabled);
+    } else {
+      ds.longAccount.autoTradeEnabled = Boolean(enabled);
+    }
+    this.saveState();
+    this.notifier.broadcastWs({
+      type: 'DEMO_ACCOUNT_UPDATED',
+      demoAccount: this.getDemoMetrics(),
+      reverseDemoAccount: this.getReverseDemoMetrics(),
+      dailySession: this.getDailySessionPayload(),
+      dailyAccountsHistory: this.state.dailyAccountsHistory || []
+    });
+    return this.getDailyMetrics(side);
+  }
+
+  openDailyTrade(side = 'long', payload = {}) {
+    this.rolloverDailyAccountsIfNeeded();
+    const ds = this.state.dailySession;
+    const isShort = side === 'short';
+    const acc = isShort ? ds.shortAccount : ds.longAccount;
+    const activeList = isShort ? ds.shortActiveTrades : ds.longActiveTrades;
+
+    const symbol = String(payload.symbol || '').toUpperCase();
+    const record = this.stockResults.get(symbol);
+    const entryPrice = Number(payload.entryPrice || record?.exactPriceEur || record?.price || 100);
+    const lodPrice = Number(payload.lodPrice || record?.analysis?.lodPrice || entryPrice * 0.985);
+    const longStopStock = Number(payload.stopLossStock || record?.sizing?.stopLossStock || lodPrice * 0.998);
+    const riskDist = Math.max(entryPrice * 0.012, Math.abs(entryPrice - longStopStock));
+    const stopLossStock = isShort
+      ? Math.round((entryPrice + riskDist) * 100) / 100
+      : Math.round(longStopStock * 100) / 100;
+    const leverage = Number(payload.leverage || record?.sizing?.activeLeverage || 8);
+
+    const desiredSize = Number(payload.positionSizeEuro || record?.sizing?.positionSizeEuro || 2500);
+    const availableCash = Math.max(0, Number(acc.cashEuro ?? 10000));
+    const equityBefore = this.getDailyMetrics(side).totalEquityEuro || Number(acc.initialBalanceEuro || 10000);
+    const maxSingleAutoAlloc = Math.max(250, Math.round(equityBefore * 0.25 * 100) / 100);
+
+    if (availableCash < 250 && payload.isDemoAuto) {
+      return null;
+    }
+
+    const cappedDesired = payload.isDemoAuto ? Math.min(desiredSize, maxSingleAutoAlloc) : desiredSize;
+    const positionSizeEuro = availableCash >= 250
+      ? Math.round(Math.min(cappedDesired, availableCash) * 100) / 100
+      : Math.round(cappedDesired * 100) / 100;
+
+    acc.cashEuro = Math.max(0, Math.round((availableCash - positionSizeEuro) * 100) / 100);
+
+    const certEntryPrice = Number(payload.certEntryPrice || record?.sizing?.modelCertEntryPrice || 1.20);
+    const quantityPieces = Number(payload.quantityPieces || Math.max(1, Math.floor(positionSizeEuro / certEntryPrice)));
+
+    const trade = {
+      id: `daily_${side}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      symbol,
+      name: payload.name || record?.name || symbol,
+      direction: isShort ? 'SHORT' : 'LONG',
+      dailyDate: ds.date,
+      currency: '€',
+      isDemoAuto: Boolean(payload.isDemoAuto ?? true),
+      entryPrice: Math.round(entryPrice * 10000) / 10000,
+      lodPrice: Math.round(lodPrice * 100) / 100,
+      stopLossStock,
+      leverage,
+      positionSizeEuro,
+      quantityPieces,
+      certEntryPrice,
+      certStopPrice: Number(payload.certStopPrice || record?.sizing?.modelCertStopPrice || certEntryPrice * 0.9),
+      catalystNote: payload.catalystNote || `Tages-${isShort ? 'Short' : 'Long'} (${ds.date})`,
+      peAtEntry: record?.fundamentals?.peValue || null,
+      entryTime: Math.floor(Date.now() / 1000),
+      openedAt: new Date().toISOString(),
+      status: 'OPEN',
+      breakEvenNotified: false,
+      lastExitAlertType: null,
+      latestEvaluation: null
+    };
+
+    const m10Bars = this.m10Store.get(symbol) || [];
+    if (m10Bars.length > 0) {
+      trade.latestEvaluation = isShort
+        ? evaluateReverseActiveTrade(trade, m10Bars, record?.marketClock || {})
+        : evaluateActiveTrade(trade, m10Bars, record?.marketClock || {});
+    }
+
+    acc.orderHistory = [
+      {
+        id: `daily_ord_${side}_${Date.now()}`,
+        action: 'BUY',
+        timestamp: trade.openedAt,
+        time: trade.openedAt,
+        side: isShort ? `SHORT (TAGES-KONTO ${ds.date})` : `BUY (TAGES-KONTO ${ds.date})`,
+        symbol: trade.symbol,
+        name: trade.name,
+        priceEuro: trade.entryPrice,
+        stockPriceEuro: trade.entryPrice,
+        leverage: trade.leverage,
+        positionSizeEuro: trade.positionSizeEuro,
+        amountEuro: trade.positionSizeEuro,
+        quantityPieces: trade.quantityPieces,
+        stopLossEuro: trade.stopLossStock,
+        note: trade.catalystNote
+      },
+      ...(acc.orderHistory || [])
+    ].slice(0, 50);
+
+    activeList.unshift(trade);
+    this.saveState();
+    return trade;
+  }
+
+  closeDailyTrade(side = 'long', tradeId, exitPriceInput = null, exitReason = 'Tages-Exit') {
+    const ds = this.state.dailySession;
+    if (!ds) throw new Error('Kein aktiver Tages-Account');
+    const isShort = side === 'short';
+    const acc = isShort ? ds.shortAccount : ds.longAccount;
+    const activeList = isShort ? ds.shortActiveTrades : ds.longActiveTrades;
+    const journalList = isShort ? ds.shortJournal : ds.longJournal;
+
+    const idx = activeList.findIndex((t) => t.id === tradeId);
+    if (idx === -1) throw new Error('Tages-Trade nicht gefunden');
+
+    const trade = activeList[idx];
+    const record = this.stockResults.get(trade.symbol);
+    const exitPrice = Number(
+      exitPriceInput || trade.latestEvaluation?.currentPrice || record?.price || trade.entryPrice
+    );
+
+    const stockGainPct = isShort
+      ? ((trade.entryPrice - exitPrice) / trade.entryPrice) * 100
+      : ((exitPrice - trade.entryPrice) / trade.entryPrice) * 100;
+    const derivGainPct = Math.max(-99, stockGainPct * trade.leverage);
+    const pnlEuro = Math.round(trade.positionSizeEuro * (derivGainPct / 100) * 100) / 100;
+    const payoutEuro = Math.max(0, Math.round((trade.positionSizeEuro + pnlEuro) * 100) / 100);
+    const riskPerShare = Math.max(0.01, Math.abs(trade.stopLossStock - trade.entryPrice));
+    const rMultiple = isShort
+      ? (trade.entryPrice - exitPrice) / riskPerShare
+      : (exitPrice - trade.entryPrice) / riskPerShare;
+    const stopDistancePct = (riskPerShare / trade.entryPrice) * 100;
+
+    acc.cashEuro = Math.round((Number(acc.cashEuro || 0) + payoutEuro) * 100) / 100;
+    acc.realizedPnlEuro = Math.round((Number(acc.realizedPnlEuro || 0) + pnlEuro) * 100) / 100;
+    acc.totalTrades = Number(acc.totalTrades || 0) + 1;
+    if (pnlEuro >= 0) {
+      acc.wins = Number(acc.wins || 0) + 1;
+    } else {
+      acc.losses = Number(acc.losses || 0) + 1;
+    }
+
+    activeList.splice(idx, 1);
+    const updatedMetrics = this.getDailyMetrics(side);
+
+    const journalEntry = {
+      id: `daily_j_${side}_${Date.now()}`,
+      symbol: trade.symbol,
+      name: trade.name,
+      direction: isShort ? 'SHORT' : 'LONG',
+      dailyDate: ds.date,
+      currency: '€',
+      openedAt: trade.openedAt,
+      closedAt: new Date().toISOString(),
+      catalystAndPe: `${trade.catalystNote}${trade.peAtEntry ? ` (KGV: ${trade.peAtEntry}x)` : ''}`,
+      entryPrice: trade.entryPrice,
+      lodPrice: trade.lodPrice,
+      stopLossStock: trade.stopLossStock,
+      stopDistancePct: Math.round(stopDistancePct * 100) / 100,
+      exitPrice: Math.round(exitPrice * 100) / 100,
+      leverage: trade.leverage,
+      positionSizeEuro: Math.round(trade.positionSizeEuro),
+      payoutEuro,
+      stockGainPct: Math.round(stockGainPct * 100) / 100,
+      derivGainPct: Math.round(derivGainPct * 10) / 10,
+      pnlEuro,
+      rMultiple: Math.round(rMultiple * 100) / 100,
+      demoEquityAfterEuro: updatedMetrics.totalEquityEuro,
+      exitReason
+    };
+
+    acc.orderHistory = [
+      {
+        id: `daily_ord_close_${side}_${Date.now()}`,
+        action: 'SELL',
+        timestamp: journalEntry.closedAt,
+        time: journalEntry.closedAt,
+        side: isShort ? 'COVER (TAGES-SHORT)' : 'SELL (TAGES-LONG)',
+        symbol: trade.symbol,
+        name: trade.name,
+        entryPriceEuro: trade.entryPrice,
+        exitPriceEuro: journalEntry.exitPrice,
+        stockPriceEuro: journalEntry.exitPrice,
+        leverage: trade.leverage,
+        payoutEuro,
+        amountEuro: payoutEuro,
+        pnlEuro,
+        derivGainPct: journalEntry.derivGainPct,
+        rMultiple: journalEntry.rMultiple,
+        note: exitReason
+      },
+      ...(acc.orderHistory || [])
+    ].slice(0, 50);
+
+    journalList.unshift(journalEntry);
+
+    acc.equityCurve = [
+      ...(acc.equityCurve || []),
+      {
+        time: journalEntry.closedAt,
+        equityEuro: updatedMetrics.totalEquityEuro,
+        pnlEuro,
+        label: `${isShort ? 'SHORT' : 'LONG'} ${trade.symbol} (${pnlEuro >= 0 ? '+' : ''}${pnlEuro.toFixed(0)} €)`
+      }
+    ].slice(-60);
+
+    this.saveState();
+    return journalEntry;
+  }
+
   getM10ChartData(symbol) {
     return this.m10Store.get(symbol) || [];
   }
 
   getSnapshot() {
+    this.rolloverDailyAccountsIfNeeded();
     const stocks = Array.from(this.stockResults.values()).sort((a, b) => {
       const pa = a.analysis?.phase ?? -9;
       const pb = b.analysis?.phase ?? -9;
@@ -2038,6 +2785,8 @@ export class StrategyScanner {
       settings: this.state.settings,
       demoAccount: this.getDemoMetrics(),
       reverseDemoAccount: this.getReverseDemoMetrics(),
+      dailySession: this.getDailySessionPayload(),
+      dailyAccountsHistory: this.state.dailyAccountsHistory || [],
       indexRegimes: this.indexRegimes,
       stocks,
       activeTrades: this.state.activeTrades,
