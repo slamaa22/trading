@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   resampleToM10,
   analyzeM10BottomFormation,
+  evaluateBuyStrategyEntry,
   calculateRiskAndPositionSizing,
   evaluateActiveTrade,
   generatePlaybookCaseStudyBars
@@ -94,3 +95,111 @@ test('Dynamischer Stagnations-Exit (Kapitel 06) erkennt Stufe 3 bei 100,30 €',
   assert.equal(evalRes.alertType, 'STAGNATION_EXIT');
   assert.ok(evalRes.derivGainPct > 30);
 });
+
+test('Buy-Strategie v2 Entry-Gate akzeptiert starke Phase-4-Setups und filtert schwache aus', () => {
+  const strongAnalysis = {
+    phase: 4,
+    confluenceCount: 2,
+    barsSinceFirstLow: 5,
+    currentPrice: 101.2,
+    ema20: 100.5,
+    vwap: 100.8,
+    rsi14: 48
+  };
+  const okFund = { fundamentalPassed: true };
+  const okSizing = { stopDistanceStockPct: 1.4 };
+  const okIndex = { changePct: -0.2, isFallingHard: false };
+
+  const accepted = evaluateBuyStrategyEntry(strongAnalysis, okFund, okSizing, okIndex);
+  assert.equal(accepted.qualified, true);
+  assert.equal(accepted.reasons.length, 0);
+
+  const weakConfluence = evaluateBuyStrategyEntry(
+    { ...strongAnalysis, confluenceCount: 1 },
+    okFund,
+    okSizing,
+    okIndex
+  );
+  assert.equal(weakConfluence.qualified, false);
+
+  const weakIndex = evaluateBuyStrategyEntry(
+    strongAnalysis,
+    okFund,
+    okSizing,
+    { changePct: -1.15, isFallingHard: true }
+  );
+  assert.equal(weakIndex.qualified, false);
+
+  const wideStop = evaluateBuyStrategyEntry(
+    strongAnalysis,
+    okFund,
+    { stopDistanceStockPct: 3.2 },
+    okIndex
+  );
+  assert.equal(wideStop.qualified, false);
+});
+
+test('Buy-Strategie v2 Trade-Management: +1.0R Break-Even, +1.1R Pullback-TP, 80-Min. Time-Stop & initialStopStock', () => {
+  const baseTime = 1700000000;
+  const makeBars = (candles) =>
+    candles.map((c, idx) => ({
+      time: baseTime + idx * 600,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      ema20: c.ema20 ?? 100.0,
+      atr14: 0.5
+    }));
+
+  // 1) +1.0R Break-Even & R-Multiple Berechnung über initialStopStock (nicht verzerrt durch nachgezogenen Stop)
+  const beBars = makeBars([
+    { open: 100.0, high: 100.4, low: 99.8, close: 100.3, ema20: 99.9 },
+    { open: 100.3, high: 101.2, low: 100.2, close: 101.1, ema20: 100.1 }
+  ]);
+  const beTrade = {
+    entryPrice: 100.0,
+    initialStopStock: 99.0,
+    stopLossStock: 100.1, // bereits auf Break-Even nachgezogen
+    leverage: 8,
+    positionSizeEuro: 2500,
+    entryTime: baseTime
+  };
+  const beEval = evaluateActiveTrade(beTrade, beBars, { isOpen: true });
+  assert.equal(beEval.stage, 2);
+  assert.equal(beEval.alertType, 'MOVE_TO_BREAKEVEN');
+  assert.equal(beEval.rMultiple, 1.1);
+
+  // 2) +1.1R Momentum-Pullback Take-Profit bei erster roter Kerze >= 0.25% unter Hoch
+  const pullbackBars = makeBars([
+    { open: 100.0, high: 101.8, low: 99.9, close: 101.7, ema20: 100.2 },
+    { open: 101.7, high: 101.75, low: 101.2, close: 101.3, ema20: 100.4 }
+  ]);
+  const pbTrade = {
+    entryPrice: 100.0,
+    initialStopStock: 99.0,
+    stopLossStock: 99.0,
+    leverage: 8,
+    positionSizeEuro: 2500,
+    entryTime: baseTime
+  };
+  const pbEval = evaluateActiveTrade(pbTrade, pullbackBars, { isOpen: true });
+  assert.equal(pbEval.stage, 3);
+  assert.equal(pbEval.alertType, 'STAGNATION_EXIT');
+  assert.ok(pbEval.stagnationCriteria.some((c) => c.id === 'long_momentum_pullback'));
+
+  // 3) 80-Minuten Weak-Bounce Time-Stop (8 M10-Kerzen, < -0.25R & unter EMA20)
+  const weakBars = makeBars(
+    Array.from({ length: 8 }, (_, i) => ({
+      open: 99.8,
+      high: 99.9,
+      low: 99.5,
+      close: i === 7 ? 99.6 : 99.7,
+      ema20: 100.1
+    }))
+  );
+  const tsEval = evaluateActiveTrade(pbTrade, weakBars, { isOpen: true });
+  assert.equal(tsEval.alertType, 'TIME_STOP_EXIT');
+  assert.ok(tsEval.rMultiple <= -0.3);
+});
+

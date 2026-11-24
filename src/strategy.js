@@ -620,6 +620,49 @@ export function analyzeM10BottomFormation(m10Bars, dailySupportInfo = {}, fundam
 }
 
 /**
+ * Strenger Qualitäts-Gate speziell für den Buy-Account (Account #1 Long & Tages-Long):
+ * Verhindert verfrühte Dead-Cat-Bounce-Käufe gegen fallende Indizes oder mit weitem Stop.
+ */
+export function evaluateBuyStrategyEntry(analysis, fundamentals, sizing, indexRegime = {}) {
+  const reasons = [];
+  if (!analysis || analysis.phase !== 4) {
+    reasons.push('Kein Phase-4-Ausbruch');
+  }
+  if ((analysis?.confluenceCount || 0) < 2) {
+    reasons.push(`Zu wenig Konfluenz (${analysis?.confluenceCount || 0}/4 < 2)`);
+  }
+  if ((analysis?.barsSinceFirstLow || 0) < 4) {
+    reasons.push(`Boden zu kurz (${analysis?.barsSinceFirstLow || 0} < 4 M10-Kerzen)`);
+  }
+  const price = Number(analysis?.currentPrice || 0);
+  const ema20 = Number(analysis?.ema20 || 0);
+  const vwap = Number(analysis?.vwap || 0);
+  if (price > 0 && !(price > ema20 || price > vwap)) {
+    reasons.push('Kurs noch unter EMA20 und VWAP');
+  }
+  const rsi = Number(analysis?.rsi14 ?? 50);
+  if (rsi < 34 || rsi > 64) {
+    reasons.push(`RSI (${rsi.toFixed(1)}) außerhalb Zielzone 34–64`);
+  }
+  const idxChg = Number(indexRegime?.changePct ?? 0);
+  if (indexRegime?.isFallingHard === true || idxChg <= -0.85) {
+    reasons.push(`Leitindex schwach (${idxChg.toFixed(2)}% <= -0,85%)`);
+  }
+  if (fundamentals?.fundamentalPassed === false) {
+    reasons.push('Fundamental-/Earnings-Sperre aktiv');
+  }
+  const stopDistPct = Number(sizing?.stopDistanceStockPct ?? 99);
+  if (stopDistPct > 2.6) {
+    reasons.push(`Stop-Abstand zu weit (${stopDistPct.toFixed(2)}% > 2,6%)`);
+  }
+
+  return {
+    qualified: reasons.length === 0,
+    reasons
+  };
+}
+
+/**
  * Berechnet gemäß Kapitel 04 & 05:
  * - Strukturellen Stop-Loss in der Aktie (LoD minus 0,15%–0,30% Noise-Buffer + Psychologische Marken)
  * - Optimalen Hebel (5x–10x) anhand Stop-Abstand & Aktien-Volatilitätsprofil
@@ -768,7 +811,10 @@ export function calculateRiskAndPositionSizing({
 }
 
 /**
- * Überwacht einen laufenden Trade gemäß Kapitel 06 (3-Stufen-Plan & Dynamischer Stagnations-Exit).
+ * Überwacht einen laufenden Buy/Long-Trade (Buy-Strategie v2):
+ * - +2.0R direktes Gewinnziel oder +1.1R Pullback-Gewinnmitnahme bei erster roter Kerze
+ * - Frühe Break-Even-Sicherung ab +1.0R (+0,1% über Entry), Trailing-Stop ab +1.4R
+ * - 80-Minuten-Time-Stop falls kein Follow-Through über EMA20 entsteht
  */
 export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
   if (!trade || !m10Bars || m10Bars.length === 0) return null;
@@ -776,13 +822,14 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
   const latestBar = m10Bars[m10Bars.length - 1];
   const currentPrice = latestBar.close;
   const entryPrice = trade.entryPrice;
-  const initialStopStock = trade.stopLossStock;
+  const activeStopStock = trade.stopLossStock;
+  const initialStopStock = trade.initialStopStock || activeStopStock;
   const leverage = trade.leverage || 8;
   const riskPerShare = Math.max(0.01, entryPrice - initialStopStock);
 
   const stockGainAbs = currentPrice - entryPrice;
   const stockGainPct = (stockGainAbs / entryPrice) * 100;
-  const derivGainPct = stockGainPct * leverage;
+  const derivGainPct = Math.max(-99, stockGainPct * leverage);
   const rMultiple = stockGainAbs / riskPerShare;
   const pnlEuro = (trade.positionSizeEuro || 1000) * (derivGainPct / 100);
 
@@ -791,16 +838,22 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
   const activeSlice = barsSinceEntry.length >= 2 ? barsSinceEntry : m10Bars.slice(-8);
   const highestSinceEntry = Math.max(...activeSlice.map((b) => b.high), entryPrice);
 
-  // Prüfe, ob der Stop-Loss unter dem Tagestief gerissen wurde
-  if (currentPrice <= initialStopStock) {
+  // 1. Prüfe aktiven Stop-Loss (initial unter LoD oder nachgezogener Break-Even-/Trailing-Stop)
+  if (currentPrice <= activeStopStock) {
+    const isBeOrTrailing = activeStopStock >= entryPrice;
     return {
       stage: 0,
-      stageName: 'STOP-LOSS AUSGELÖST (Unter Tagestief)',
+      stageName: isBeOrTrailing
+        ? 'BREAK-EVEN / TRAILING-STOP AUSGELÖST'
+        : 'STOP-LOSS AUSGELÖST (Unter Tagestief)',
       actionRequired: true,
       alertType: 'STOP_LOSS_HIT',
-      recommendation: `STRUKTURELLER STOP-LOSS (${initialStopStock.toFixed(2)}) UNTERSCHRITTEN! Position sofort glattstellen – Verbot der Stop-Loss-Aufweichung (Kap. 07)!`,
-      recommendedStopStock: initialStopStock,
+      recommendation: isBeOrTrailing
+        ? `Break-Even-/Trailing-Stop (${activeStopStock.toFixed(2)} €) erreicht – Position abgesichert geschlossen.`
+        : `STRUKTURELLER STOP-LOSS (${activeStopStock.toFixed(2)} €) UNTERSCHRITTEN! Position sofort glattstellen.`,
+      recommendedStopStock: activeStopStock,
       currentPrice: round2(currentPrice),
+      highestSinceEntry: round2(highestSinceEntry),
       stockGainPct: round2(stockGainPct),
       derivGainPct: round2(derivGainPct),
       rMultiple: round2(rMultiple),
@@ -809,10 +862,47 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
     };
   }
 
-  // Prüfe die 3 Stagnations-Kriterien aus Kapitel 6.2 (nur relevant wenn Trade im Gewinn / nach Aufwärtsimpuls)
+  // 2. Weak-Bounce Time-Stop: Nach 80 Min. (8 M10-Kerzen) negativ & unter EMA20 -> vorzeitig beenden
+  if (barsSinceEntry.length >= 8 && rMultiple < -0.25 && latestBar.close < latestBar.ema20) {
+    return {
+      stage: 0,
+      stageName: 'TIME-STOP (Kein Follow-Through nach 80 Min.)',
+      actionRequired: true,
+      alertType: 'TIME_STOP_EXIT',
+      recommendation: `Position kommt nach ${barsSinceEntry.length * 10} Min. nicht über EMA20 (${rMultiple.toFixed(2)}R). Kapital vorzeitig freigeben.`,
+      recommendedStopStock: activeStopStock,
+      currentPrice: round2(currentPrice),
+      highestSinceEntry: round2(highestSinceEntry),
+      stockGainPct: round2(stockGainPct),
+      derivGainPct: round2(derivGainPct),
+      rMultiple: round2(rMultiple),
+      pnlEuro: round2(pnlEuro),
+      stagnationCriteria: []
+    };
+  }
+
+  // 3. Gewinnziel & Dynamische Gewinnmitnahme (Buy v2)
   const stagnationCriteria = [];
 
-  // Kriterium 1: Zeitliche & strukturelle Kompression (4 bis 6 M10-Kerzen ohne signifikantes neues Hoch + kleine Kerzenkörper)
+  if (rMultiple >= 2.0) {
+    stagnationCriteria.push({
+      id: 'long_target_hit',
+      name: 'Buy-Kursziel (+2.0R Aufwärtsimpuls) erreicht',
+      detail: `Gewinnziel erreicht (+${rMultiple.toFixed(2)}R / +${derivGainPct.toFixed(1)}% im Derivat)`
+    });
+  } else if (
+    rMultiple >= 1.1 &&
+    latestBar.close < latestBar.open &&
+    latestBar.close <= highestSinceEntry * 0.9975
+  ) {
+    stagnationCriteria.push({
+      id: 'long_momentum_pullback',
+      name: 'Momentum-Gewinnmitnahme nach Impulshoch',
+      detail: `Erste rote M10-Korrektur nach +${rMultiple.toFixed(2)}R vom Hoch (${highestSinceEntry.toFixed(2)} €) – Gewinn direkt sichern`
+    });
+  }
+
+  // Kriterium 1: Kompression ab +1.2R
   const last4 = m10Bars.slice(-4);
   let barsSincePeak = 0;
   for (let i = activeSlice.length - 1; i >= 0; i--) {
@@ -835,7 +925,7 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
     });
   }
 
-  // Kriterium 2: Abprall an Widerstand / Mehrfache obere Dochte (Shooting-Star-Kerzen)
+  // Kriterium 2: Abprall an Widerstand / Mehrfache obere Dochte
   const last5 = m10Bars.slice(-5);
   const upperWickBars = last5.filter((b) => {
     const range = Math.max(0.0001, b.high - b.low);
@@ -851,9 +941,9 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
     });
   }
 
-  // Kriterium 3: Strukturbruch im M10-Aufwärtstrend (Schlusskurs unter letztem Higher Low & unter M10-EMA 20)
+  // Kriterium 3: Strukturbruch im M10-Aufwärtstrend
   const prev3Lows = m10Bars.slice(-4, -1).map((b) => b.low);
-  const lastHigherLow = prev3Lows.length > 0 ? Math.min(...prev3Lows) : initialStopStock;
+  const lastHigherLow = prev3Lows.length > 0 ? Math.min(...prev3Lows) : activeStopStock;
   const hasStructureBreak =
     rMultiple >= 1.0 &&
     latestBar.close < latestBar.open &&
@@ -868,36 +958,43 @@ export function evaluateActiveTrade(trade, m10Bars, marketClock = {}) {
     });
   }
 
-  // Overnight-Regel (Kapitel 6.3): Kurz vor Handelsschluss (17:30 EU / 22:00 US) ohne Gewinnpolster (< 1.5R)
-  const overnightWarning = marketClock.isNearClose && rMultiple < 1.5;
+  // Overnight-Regel (Kapitel 6.3): Kurz vor Handelsschluss ohne Gewinnpolster (< 1.2R)
+  const overnightWarning = marketClock.isNearClose && rMultiple < 1.2;
 
   let stage = 1;
   let stageName = 'Stufe 1: Initial Risk (Stop unter Tagestief belassen)';
   let actionRequired = false;
   let alertType = 'HOLD_STAGE_1';
-  let recommendedStopStock = initialStopStock;
-  let recommendation = `Stop-Loss bleibt unangetastet bei ${initialStopStock.toFixed(2)} (unter LoD). Der Trade braucht anfangs Luft zum Atmen.`;
+  let recommendedStopStock = activeStopStock;
+  let recommendation = `Stop-Loss bleibt unangetastet bei ${activeStopStock.toFixed(2)} (unter LoD).`;
 
   if (stagnationCriteria.length > 0) {
     stage = 3;
-    stageName = 'Stufe 3: DYNAMISCHER STAGNATIONS-EXIT AUSGELÖST!';
+    stageName = 'Stufe 3: TAKE-PROFIT / STAGNATIONS-EXIT AUSGELÖST!';
     actionRequired = true;
     alertType = 'STAGNATION_EXIT';
-    recommendedStopStock = round2(lastHigherLow);
-    recommendation = `TAKE PROFIT / VERKAUF BEI STAGNATION: ${stagnationCriteria.map((c) => c.name).join(' + ')}. Position glattstellen (oder 50% Teilverkauf + enger Trailing-Stop auf ${lastHigherLow.toFixed(2)})!`;
+    recommendedStopStock = round2(Math.max(activeStopStock, lastHigherLow));
+    recommendation = `TAKE PROFIT (BUY v2): ${stagnationCriteria.map((c) => c.name).join(' + ')}. Position gewinnbringend glattstellen!`;
   } else if (overnightWarning) {
     stage = 1;
     stageName = 'Overnight-Schutzregel (Kap. 6.3): Vor Börsenschluss glattstellen!';
     actionRequired = true;
     alertType = 'OVERNIGHT_CLOSE_WARNING';
-    recommendation = 'Börsenschluss naht und Position hat noch kein Stufe-2-Gewinnpolster! Laut Kapitel 6.3 vor Handelsschluss manuell schließen (Schutz vor Eröffnungs-Gap).';
-  } else if (rMultiple >= 1.5) {
+    recommendation = 'Börsenschluss naht und Position hat noch kein Gewinnpolster! Vor Handelsschluss schließen.';
+  } else if (rMultiple >= 1.4) {
     stage = 2;
-    stageName = 'Stufe 2: Free-Ride-Sicherung (Break-Even erreicht!)';
+    stageName = 'Stufe 2: Trailing-Stop aktiv (+1,4R erreicht)';
     actionRequired = !trade.breakEvenNotified;
     alertType = 'MOVE_TO_BREAKEVEN';
-    recommendedStopStock = round2(Math.max(entryPrice, lastHigherLow * 0.9985));
-    recommendation = `Buchgewinn liegt bei +${rMultiple.toFixed(2)}R (+${stockGainPct.toFixed(2)}% in Aktie / +${derivGainPct.toFixed(1)}% im Derivat). Stop-Loss jetzt auf Einstiegskurs (${entryPrice.toFixed(2)} = Break-Even) bzw. letztes M10-Zwischentief (${recommendedStopStock.toFixed(2)}) nachziehen!`;
+    recommendedStopStock = round2(Math.max(activeStopStock, entryPrice * 1.0025, lastHigherLow * 0.9985));
+    recommendation = `Buchgewinn bei +${rMultiple.toFixed(2)}R (+${derivGainPct.toFixed(1)}%). Trailing-Stop auf ${recommendedStopStock.toFixed(2)} € nachgezogen.`;
+  } else if (rMultiple >= 1.0) {
+    stage = 2;
+    stageName = 'Stufe 2: Free-Ride-Sicherung (Break-Even ab +1,0R!)';
+    actionRequired = !trade.breakEvenNotified;
+    alertType = 'MOVE_TO_BREAKEVEN';
+    recommendedStopStock = round2(Math.max(activeStopStock, entryPrice * 1.001));
+    recommendation = `Buchgewinn bei +${rMultiple.toFixed(2)}R. Stop-Loss auf Break-Even (${recommendedStopStock.toFixed(2)} €) nachgezogen.`;
   }
 
   return {

@@ -11,6 +11,7 @@ import {
   findDailySupportZones,
   evaluateFundamentalAndFilters,
   analyzeM10BottomFormation,
+  evaluateBuyStrategyEntry,
   calculateRiskAndPositionSizing,
   evaluateActiveTrade,
   evaluateReverseActiveTrade,
@@ -312,6 +313,9 @@ export class StrategyScanner {
   }
 
   rolloverDailyAccountsIfNeeded() {
+    if (this._isRollingOverDaily) {
+      return false;
+    }
     const todayStr = getBerlinDateStr();
     if (!this.state.dailySession) {
       this.state.dailySession = createEmptyDailySession(todayStr);
@@ -323,62 +327,67 @@ export class StrategyScanner {
       return false;
     }
 
-    const prev = this.state.dailySession;
-    const prevDate = prev.date;
+    this._isRollingOverDaily = true;
+    try {
+      const prev = this.state.dailySession;
+      const prevDate = prev.date;
 
-    // Falls im vorherigen Tages-Account noch Positionen offen waren, sauber zum letzten Kurs glattstellen
-    for (const t of [...(prev.longActiveTrades || [])]) {
-      try {
-        this.closeDailyTrade('long', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
-      } catch {
-        // ignore
+      // Falls im vorherigen Tages-Account noch Positionen offen waren, sauber zum letzten Kurs glattstellen
+      for (const t of [...(prev.longActiveTrades || [])]) {
+        try {
+          this.closeDailyTrade('long', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
+        } catch {
+          // ignore
+        }
       }
-    }
-    for (const t of [...(prev.shortActiveTrades || [])]) {
-      try {
-        this.closeDailyTrade('short', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
-      } catch {
-        // ignore
+      for (const t of [...(prev.shortActiveTrades || [])]) {
+        try {
+          this.closeDailyTrade('short', t.id, null, `Tagesabschluss-Rollover (${prevDate})`);
+        } catch {
+          // ignore
+        }
       }
+
+      const longMetrics = this.getDailyMetrics('long', { skipRollover: true });
+      const shortMetrics = this.getDailyMetrics('short', { skipRollover: true });
+
+      const dayRecord = {
+        date: prevDate,
+        longSummary: {
+          initialBalanceEuro: longMetrics.initialBalanceEuro,
+          endEquityEuro: longMetrics.totalEquityEuro,
+          dailyPnlEuro: longMetrics.totalReturnEuro,
+          dailyReturnPct: longMetrics.totalReturnPct,
+          totalTrades: longMetrics.totalTrades,
+          wins: longMetrics.wins,
+          losses: longMetrics.losses,
+          winRatePct: longMetrics.winRatePct
+        },
+        shortSummary: {
+          initialBalanceEuro: shortMetrics.initialBalanceEuro,
+          endEquityEuro: shortMetrics.totalEquityEuro,
+          dailyPnlEuro: shortMetrics.totalReturnEuro,
+          dailyReturnPct: shortMetrics.totalReturnPct,
+          totalTrades: shortMetrics.totalTrades,
+          wins: shortMetrics.wins,
+          losses: shortMetrics.losses,
+          winRatePct: shortMetrics.winRatePct
+        },
+        longTrades: prev.longJournal || [],
+        shortTrades: prev.shortJournal || []
+      };
+
+      const existing = (this.state.dailyAccountsHistory || []).filter((h) => h.date !== prevDate);
+      this.state.dailyAccountsHistory = [dayRecord, ...existing]
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+        .slice(0, 180);
+
+      this.state.dailySession = createEmptyDailySession(todayStr);
+      this.saveState();
+      return true;
+    } finally {
+      this._isRollingOverDaily = false;
     }
-
-    const longMetrics = this.getDailyMetrics('long');
-    const shortMetrics = this.getDailyMetrics('short');
-
-    const dayRecord = {
-      date: prevDate,
-      longSummary: {
-        initialBalanceEuro: longMetrics.initialBalanceEuro,
-        endEquityEuro: longMetrics.totalEquityEuro,
-        dailyPnlEuro: longMetrics.totalReturnEuro,
-        dailyReturnPct: longMetrics.totalReturnPct,
-        totalTrades: longMetrics.totalTrades,
-        wins: longMetrics.wins,
-        losses: longMetrics.losses,
-        winRatePct: longMetrics.winRatePct
-      },
-      shortSummary: {
-        initialBalanceEuro: shortMetrics.initialBalanceEuro,
-        endEquityEuro: shortMetrics.totalEquityEuro,
-        dailyPnlEuro: shortMetrics.totalReturnEuro,
-        dailyReturnPct: shortMetrics.totalReturnPct,
-        totalTrades: shortMetrics.totalTrades,
-        wins: shortMetrics.wins,
-        losses: shortMetrics.losses,
-        winRatePct: shortMetrics.winRatePct
-      },
-      longTrades: prev.longJournal || [],
-      shortTrades: prev.shortJournal || []
-    };
-
-    const existing = (this.state.dailyAccountsHistory || []).filter((h) => h.date !== prevDate);
-    this.state.dailyAccountsHistory = [dayRecord, ...existing]
-      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-      .slice(0, 180);
-
-    this.state.dailySession = createEmptyDailySession(todayStr);
-    this.saveState();
-    return true;
   }
 
   syncReverseFromMainHistory() {
@@ -1225,11 +1234,15 @@ export class StrategyScanner {
         !marketClock.isNearClose &&
         this.notifier.shouldTriggerPhaseAlert(stockMeta.symbol, 4, lastSession)
       ) {
+        const buyGate = evaluateBuyStrategyEntry(analysis, fundamentals, sizing, indexRegime);
         let openedDemoTrade = null;
         const alreadyOpen = this.state.activeTrades.some(
           (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
         );
+        const openMainCount = this.state.activeTrades.filter((t) => t.status === 'OPEN').length;
         if (
+          buyGate.qualified &&
+          openMainCount < 5 &&
           !alreadyOpen &&
           this.state.demoAccount.autoTradeEnabled !== false &&
           Number(this.state.demoAccount.cashEuro || 0) >= 250
@@ -1247,11 +1260,11 @@ export class StrategyScanner {
             quantityPieces: sizing.quantityPieces,
             certEntryPrice: sizing.modelCertEntryPrice,
             certStopPrice: sizing.modelCertStopPrice,
-            catalystNote: 'Auto-Trade Demo-Account (Phase-4-Lead M10 Ausbruch)'
+            catalystNote: `Buy-Strategie v2 (Konfluenz ${analysis.confluenceCount}/4 · M10 Ausbruch)`
           });
         }
 
-        // ACCOUNT 2 (REVERSE STRATEGIE): Wenn Account 1 Long geht, geht Account 2 automatisch Short!
+        // ACCOUNT 2 (REVERSE STRATEGIE): Wenn Phase-4-Signal feuert, geht Account 2 automatisch Short!
         const alreadyOpenRev = (this.state.reverseActiveTrades || []).some(
           (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
         );
@@ -1277,14 +1290,17 @@ export class StrategyScanner {
           });
         }
 
-        // TAGES-ACCOUNTS (10.000 € PRO HANDELSTAG): Tages-Long & Tages-Short parallel eröffnen!
+        // TAGES-ACCOUNTS (10.000 € PRO HANDELSTAG): Tages-Long (Buy v2 Gate) & Tages-Short parallel eröffnen!
         this.rolloverDailyAccountsIfNeeded();
         const ds = this.state.dailySession;
         const alreadyOpenDailyLong = (ds?.longActiveTrades || []).some(
           (t) => t.symbol === stockMeta.symbol && t.status === 'OPEN'
         );
+        const openDailyLongCount = (ds?.longActiveTrades || []).filter((t) => t.status === 'OPEN').length;
         if (
           ds &&
+          buyGate.qualified &&
+          openDailyLongCount < 5 &&
           !alreadyOpenDailyLong &&
           ds.longAccount?.autoTradeEnabled !== false &&
           Number(ds.longAccount?.cashEuro || 0) >= 250
@@ -1302,7 +1318,7 @@ export class StrategyScanner {
             quantityPieces: sizing.quantityPieces,
             certEntryPrice: sizing.modelCertEntryPrice,
             certStopPrice: sizing.modelCertStopPrice,
-            catalystNote: `Tages-Long (${ds.date}) · Phase-4-Lead`
+            catalystNote: `Tages-Long v2 (${ds.date}) · Konfluenz ${analysis.confluenceCount}/4`
           });
         }
 
@@ -1420,14 +1436,18 @@ export class StrategyScanner {
       trade.latestEvaluation = evaluation;
       trade.currency = '€';
 
-      // Automatischer Break-Even Stop-Nachzug im Demo-Account ab 1,5R (lautlos im Hintergrund)
+      // Automatischer Break-Even Stop-Nachzug im Demo-Account ab +1,0R (lautlos im Hintergrund)
       if (evaluation.stage >= 2 && evaluation.recommendedStopStock > trade.stopLossStock) {
+        if (!trade.initialStopStock) {
+          trade.initialStopStock = trade.stopLossStock;
+        }
         trade.stopLossStock = evaluation.recommendedStopStock;
         trade.breakEvenActive = true;
       }
 
-      // Prüfe, ob der Lead geschlossen werden soll (Take-Profit / Stagnation, Stop-Loss oder EOD/Börsenschluss)
+      // Prüfe, ob der Lead geschlossen werden soll (Take-Profit / Stagnation, Stop-Loss / Trailing-Stop, Time-Stop oder EOD)
       const isStopHit = evaluation.alertType === 'STOP_LOSS_HIT';
+      const isTimeStop = evaluation.alertType === 'TIME_STOP_EXIT';
       const isStagnationExit = evaluation.alertType === 'STAGNATION_EXIT';
       const isEodClose = Boolean(
         trade.isDemoAuto &&
@@ -1435,12 +1455,17 @@ export class StrategyScanner {
         (liveClock.isNearClose || !liveClock.isOpen)
       );
 
-      if (isStopHit || isStagnationExit || isEodClose) {
-        const exitReason = isStopHit
-          ? 'Stop-Loss unter Tagestief ausgelöst (Kap. 05)'
-          : isStagnationExit
-            ? 'Stagnations-Exit / Take-Profit am Widerstand (Kap. 06)'
-            : 'Börsenschluss / EOD Time-Stop (Kap. 6.2)';
+      if (isStopHit || isTimeStop || isStagnationExit || isEodClose) {
+        const isBeStop = isStopHit && trade.breakEvenActive && trade.stopLossStock >= trade.entryPrice;
+        const exitReason = isBeStop
+          ? 'Break-Even / Trailing-Stop ausgelöst (Buy v2)'
+          : isStopHit
+            ? 'Stop-Loss unter Tagestief ausgelöst (Kap. 05)'
+            : isTimeStop
+              ? '80-Min. Time-Stop (Kein Follow-Through, Buy v2)'
+              : isStagnationExit
+                ? 'Buy v2 Take-Profit / Momentum-Sicherung'
+                : 'Börsenschluss / EOD Time-Stop (Kap. 6.2)';
 
         // Im Demo-Account automatisch glattstellen und Gewinn/Verlust realisieren!
         const closedJournal = this.closeActiveTrade(trade.id, evaluation.currentPrice, exitReason);
@@ -1459,9 +1484,9 @@ export class StrategyScanner {
           pnlEuro: closedJournal.pnlEuro,
           recommendedStopStock: evaluation.recommendedStopStock,
           demoAccount: this.getDemoMetrics(),
-          title: isStopHit
+          title: isStopHit && !isBeStop
             ? `🛑 LEAD GECLOSED (STOP-LOSS): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`
-            : `🏁 LEAD GECLOSED (${isEodClose ? 'BÖRSENSCHLUSS' : 'TAKE-PROFIT'}): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
+            : `🏁 LEAD GECLOSED (${isEodClose ? 'BÖRSENSCHLUSS' : isTimeStop ? 'TIME-STOP' : isBeStop ? 'BREAK-EVEN' : 'TAKE-PROFIT'}): ${trade.name} im Demo-Account verkauft (${closedJournal.pnlEuro >= 0 ? '+' : ''}${closedJournal.pnlEuro.toFixed(0)} €)`,
           message: `${exitReason} — Demo-Account Kontostand: ${this.getDemoMetrics().totalEquityEuro.toFixed(2)} €`
         });
       }
@@ -1527,20 +1552,29 @@ export class StrategyScanner {
         dlTrade.currency = '€';
 
         if (dlEval.stage >= 2 && dlEval.recommendedStopStock > dlTrade.stopLossStock) {
+          if (!dlTrade.initialStopStock) {
+            dlTrade.initialStopStock = dlTrade.stopLossStock;
+          }
           dlTrade.stopLossStock = dlEval.recommendedStopStock;
           dlTrade.breakEvenActive = true;
         }
 
         const isStopHit = dlEval.alertType === 'STOP_LOSS_HIT';
+        const isTimeStop = dlEval.alertType === 'TIME_STOP_EXIT';
         const isStagExit = dlEval.alertType === 'STAGNATION_EXIT';
         const isEod = Boolean(dlTrade.isDemoAuto && !stockRecord?.isSimulation && (liveClock.isNearClose || !liveClock.isOpen));
 
-        if (isStopHit || isStagExit || isEod) {
-          const reason = isStopHit
-            ? 'Stop-Loss unter Tagestief (Tages-Long)'
-            : isStagExit
-              ? 'Stagnations-Exit / Take-Profit (Tages-Long)'
-              : 'Börsenschluss / EOD Time-Stop (Tages-Long)';
+        if (isStopHit || isTimeStop || isStagExit || isEod) {
+          const isBeStop = isStopHit && dlTrade.breakEvenActive && dlTrade.stopLossStock >= dlTrade.entryPrice;
+          const reason = isBeStop
+            ? 'Break-Even / Trailing-Stop (Tages-Long v2)'
+            : isStopHit
+              ? 'Stop-Loss unter Tagestief (Tages-Long)'
+              : isTimeStop
+                ? '80-Min. Time-Stop (Tages-Long v2)'
+                : isStagExit
+                  ? 'Buy v2 Take-Profit (Tages-Long)'
+                  : 'Börsenschluss / EOD Time-Stop (Tages-Long)';
           this.closeDailyTrade('long', dlTrade.id, dlEval.currentPrice, reason);
         }
       }
@@ -1918,6 +1952,7 @@ export class StrategyScanner {
       entryPrice: Math.round(entryPrice * 10000) / 10000,
       lodPrice: Math.round(lodPrice * 100) / 100,
       stopLossStock: Math.round(stopLossStock * 100) / 100,
+      initialStopStock: Math.round(stopLossStock * 100) / 100,
       leverage,
       positionSizeEuro,
       quantityPieces,
@@ -1986,7 +2021,8 @@ export class StrategyScanner {
     const derivGainPct = Math.max(-99, stockGainPct * trade.leverage);
     const pnlEuro = Math.round(trade.positionSizeEuro * (derivGainPct / 100) * 100) / 100;
     const payoutEuro = Math.max(0, Math.round((trade.positionSizeEuro + pnlEuro) * 100) / 100);
-    const riskPerShare = Math.max(0.01, trade.entryPrice - trade.stopLossStock);
+    const initialStop = Number(trade.initialStopStock || trade.stopLossStock);
+    const riskPerShare = Math.max(0.01, trade.entryPrice - initialStop);
     const rMultiple = (exitPrice - trade.entryPrice) / riskPerShare;
     const stopDistancePct = (riskPerShare / trade.entryPrice) * 100;
 
@@ -2423,8 +2459,10 @@ export class StrategyScanner {
 
   // --- TAGES-ACCOUNTS (10.000 € PRO HANDELSTAG: TAGES-LONG & TAGES-SHORT) ---
 
-  getDailyMetrics(side = 'long') {
-    this.rolloverDailyAccountsIfNeeded();
+  getDailyMetrics(side = 'long', { skipRollover = false } = {}) {
+    if (!skipRollover) {
+      this.rolloverDailyAccountsIfNeeded();
+    }
     const ds = this.state.dailySession || createEmptyDailySession();
     const isShort = side === 'short';
     const acc = isShort ? ds.shortAccount : ds.longAccount;
@@ -2608,6 +2646,7 @@ export class StrategyScanner {
       entryPrice: Math.round(entryPrice * 10000) / 10000,
       lodPrice: Math.round(lodPrice * 100) / 100,
       stopLossStock,
+      initialStopStock: stopLossStock,
       leverage,
       positionSizeEuro,
       quantityPieces,
@@ -2679,7 +2718,8 @@ export class StrategyScanner {
     const derivGainPct = Math.max(-99, stockGainPct * trade.leverage);
     const pnlEuro = Math.round(trade.positionSizeEuro * (derivGainPct / 100) * 100) / 100;
     const payoutEuro = Math.max(0, Math.round((trade.positionSizeEuro + pnlEuro) * 100) / 100);
-    const riskPerShare = Math.max(0.01, Math.abs(trade.stopLossStock - trade.entryPrice));
+    const initialStop = Number(trade.initialStopStock || trade.stopLossStock);
+    const riskPerShare = Math.max(0.01, Math.abs(initialStop - trade.entryPrice));
     const rMultiple = isShort
       ? (trade.entryPrice - exitPrice) / riskPerShare
       : (exitPrice - trade.entryPrice) / riskPerShare;
